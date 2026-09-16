@@ -1,0 +1,100 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with role and location",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "pengurus"] },
+        "location": { "type": "string", "enum": ["Kramat Batu", "Karya Utama", "Radio Dalam", "Cipete", "Antena"] },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "Jamaah": {
+      "title": "Jamaah",
+      "description": "Jamaah data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "location": { "type": "string", "enum": ["Kramat Batu", "Karya Utama", "Radio Dalam", "Cipete", "Antena"] },
+        "photoUrl": { "type": "string" },
+        "registeredAt": { "type": "number" }
+      },
+      "required": ["name", "location", "registeredAt"]
+    },
+    "Asset": {
+      "title": "Asset",
+      "description": "Mosque inventory item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "status": { "type": "string", "enum": ["baik", "rusak", "perlu perbaikan"] },
+        "quantity": { "type": "number" },
+        "location": { "type": "string", "enum": ["Kramat Batu", "Karya Utama", "Radio Dalam", "Cipete", "Antena", "Utama"] },
+        "lastChecked": { "type": "number" },
+        "description": { "type": "string" }
+      },
+      "required": ["name", "status", "quantity", "lastChecked"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "Mosque activity with photos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "date": { "type": "number" },
+        "type": { "type": "string", "enum": ["harian", "mingguan"] },
+        "imageUrls": { "type": "array", "items": { "type": "string" } },
+        "createdBy": { "type": "string" },
+        "location": { "type": "string", "enum": ["Kramat Batu", "Karya Utama", "Radio Dalam", "Cipete", "Antena"] }
+      },
+      "required": ["title", "date", "type", "createdBy", "location"]
+    },
+    "FacilityStat": {
+      "title": "FacilityStat",
+      "description": "Real-time facility usage stats",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "currentUsage": { "type": "number" },
+        "capacity": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["name", "currentUsage", "capacity", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "UserProfile",
+      "description": "Users collection"
+    },
+    "/jamaah/{id}": {
+      "schema": "Jamaah",
+      "description": "Jamaah collection"
+    },
+    "/assets/{id}": {
+      "schema": "Asset",
+      "description": "Assets collection"
+    },
+    "/activities/{id}": {
+      "schema": "Activity",
+      "description": "Activities collection"
+    },
+    "/facility_stats/{id}": {
+      "schema": "FacilityStat",
+      "description": "Facility statistics collection"
+    }
+  }
+}
