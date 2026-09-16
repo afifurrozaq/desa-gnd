@@ -1,6 +1,5 @@
 import * as XLSX from 'xlsx';
 import React, { useState, useEffect, useMemo } from 'react';
-import { Analytics } from "@vercel/analytics/next"
 import { 
   LayoutDashboard, 
   Users, 
@@ -21,7 +20,8 @@ import {
   Home,
   ClipboardList,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ShoppingBag
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -61,7 +61,7 @@ import {
   signOut 
 } from 'firebase/auth';
 import { useFirestoreQuery } from './hooks/useFirestore';
-import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance } from './types';
+import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping } from './types';
 import { cn } from './lib/utils';
 
 // --- Firestore Error Handling ---
@@ -928,6 +928,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
   const [base64Image, setBase64Image] = useState<string | null>(null);
   const [isKK, setIsKK] = useState(true);
   const [selectedKKId, setSelectedKKId] = useState<string>('');
+  const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -1017,6 +1018,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       isKK: isKK,
       kkId: finalKKId,
       familyOrder,
+      positions: selectedPositions,
       photoUrl: base64Image || editingJamaah?.photoUrl || null,
       registeredAt: editingJamaah ? editingJamaah.registeredAt : Date.now()
     };
@@ -1035,6 +1037,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     setBase64Image(null);
     setIsKK(true);
     setSelectedKKId('');
+    setSelectedPositions([]);
   };
 
   const openEdit = (j: Jamaah) => {
@@ -1042,6 +1045,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     setBase64Image(j.photoUrl || null);
     setIsKK(j.isKK);
     setSelectedKKId(j.kkId || '');
+    setSelectedPositions(j.positions || []);
     setShowForm(true);
   };
 
@@ -1080,6 +1084,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
               <tr>
                 <th className="px-6 py-4 text-center">Foto</th>
                 <th className="px-6 py-4">ID / Nama</th>
+                <th className="px-6 py-4">Jabatan</th>
                 <th className="px-6 py-4">Kategori</th>
                 <th className="px-6 py-4">Telepon</th>
                 <th className="px-6 py-4">Lokasi</th>
@@ -1107,6 +1112,15 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <span className="text-xs font-bold text-emerald-600">{j.memberId}</span>
                       <span className="font-semibold text-slate-900">{j.name}</span>
                       {j.isKK && <span className="text-[10px] text-slate-400 font-medium">Kepala Keluarga</span>}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-wrap gap-1">
+                      {j.positions?.map(p => (
+                        <span key={p} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[9px] font-black uppercase whitespace-nowrap">
+                          {p}
+                        </span>
+                      )) || <span className="text-[10px] text-slate-300 italic">-</span>}
                     </div>
                   </td>
                   <td className="px-6 py-4">
@@ -1179,7 +1193,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
               initial={{ scale: 0.95, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 20 }}
-              className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl"
+              className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto"
             >
               <h3 className="text-xl font-bold mb-6">{editingJamaah ? 'Edit Data Jamaah' : 'Tambah Jamaah Baru'}</h3>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -1236,6 +1250,28 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                     <option value="APR">APR (Anak Pra Remaja)</option>
                     <option value="GPN">GPN (Generus Pra Nikah)</option>
                   </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-2">Jabatan (Sebagai Apa)</label>
+                  <div className="grid grid-cols-2 gap-2 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                    {['Rokyah', 'Kiai Kelompok', 'Kiai Desa', 'Waikel', 'Wides', 'Bos Des', 'Bos Kel'].map(pos => (
+                      <label key={pos} className="flex items-center gap-2 cursor-pointer group">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedPositions.includes(pos)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedPositions([...selectedPositions, pos]);
+                            } else {
+                              setSelectedPositions(selectedPositions.filter(p => p !== pos));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span className="text-xs font-bold text-slate-600 group-hover:text-emerald-600 transition-colors">{pos}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Telepon</label>
@@ -1447,8 +1483,8 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
 
       <AnimatePresence>
         {showForm && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
-            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl my-8">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto my-8">
               <h3 className="text-xl font-bold mb-6">{editingAsset ? `Edit ${isTanah ? 'Tanah' : 'Barang'}` : `Tambah ${isTanah ? 'Tanah Baru' : 'Barang Baru'}`}</h3>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="flex justify-center mb-6">
@@ -1665,7 +1701,7 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
       <AnimatePresence>
         {showForm && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
               <h3 className="text-xl font-bold mb-6">{editingActivity ? 'Edit Kegiatan' : 'Tambah Kegiatan'}</h3>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
@@ -2308,6 +2344,486 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
   );
 }
 
+function UBShoppingView({ profile }: { profile: UserProfile }) {
+  const { db } = useFirebase();
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [selectedLocation, setSelectedLocation] = useState<MosqueLocation | 'all'>(profile.role === 'pengurus' ? profile.location! : 'all');
+  
+  const shoppingFilter = useMemo(() => {
+    const filters = [
+      where('month', '==', selectedMonth),
+      where('year', '==', selectedYear)
+    ];
+    if (selectedLocation !== 'all') {
+      filters.push(where('location', '==', selectedLocation));
+    }
+    return filters;
+  }, [selectedMonth, selectedYear, selectedLocation]);
+
+  const { data: shoppingRecords, loading: loadingShopping } = useFirestoreQuery<UBShopping>(db, 'ub_shopping', shoppingFilter);
+  
+  const jamaahFilter = useMemo(() => {
+    if (selectedLocation !== 'all') {
+      return [where('location', '==', selectedLocation)];
+    }
+    return [];
+  }, [selectedLocation]);
+  
+  const { data: allJamaah, loading: loadingJamaah } = useFirestoreQuery<Jamaah>(db, 'jamaah', jamaahFilter);
+  
+  const [showForm, setShowForm] = useState(false);
+  const [editingShopping, setEditingShopping] = useState<UBShopping | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Searchable Select State
+  const [jamaahSearch, setJamaahSearch] = useState('');
+  const [selectedJamaahId, setSelectedJamaahId] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  const filteredJamaah = useMemo(() => {
+    if (!jamaahSearch) return allJamaah.slice(0, 10);
+    const lowerSearch = jamaahSearch.toLowerCase();
+    return allJamaah.filter(j => 
+      j.name.toLowerCase().includes(lowerSearch) || 
+      j.memberId.toLowerCase().includes(lowerSearch)
+    ).slice(0, 10);
+  }, [allJamaah, jamaahSearch]);
+
+  const months = [
+    'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
+
+  const years = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i);
+
+  const shoppingByKK = useMemo(() => {
+    const map: Record<string, number> = {};
+    const kkDocIdMap: Record<string, string> = {}; // memberId -> docId
+    
+    allJamaah.forEach(j => {
+      if (j.isKK) kkDocIdMap[j.memberId] = j.id;
+    });
+
+    shoppingRecords.forEach(rec => {
+      const jamaah = allJamaah.find(j => j.id === rec.jamaahId);
+      if (jamaah) {
+        let targetKKDocId = jamaah.id;
+        if (!jamaah.isKK && jamaah.kkId) {
+          targetKKDocId = kkDocIdMap[jamaah.kkId] || jamaah.id;
+        }
+        map[targetKKDocId] = (map[targetKKDocId] || 0) + rec.amount;
+      }
+    });
+    return map;
+  }, [shoppingRecords, allJamaah]);
+
+  const stats = useMemo(() => {
+    const kks = allJamaah.filter(j => j.isKK);
+    const totalKK = kks.length;
+    const metTarget = kks.filter(j => (shoppingByKK[j.id] || 0) >= 100000).length;
+    const totalAmount = shoppingRecords.reduce((sum, rec) => sum + rec.amount, 0);
+    
+    return {
+      totalJamaah: totalKK,
+      metTarget,
+      notMetTarget: totalKK - metTarget,
+      totalAmount
+    };
+  }, [allJamaah, shoppingByKK, shoppingRecords]);
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!db) return;
+    setIsUpdating(true);
+    
+    const formData = new FormData(e.currentTarget);
+    const jamaahId = selectedJamaahId;
+    const jamaah = allJamaah.find(j => j.id === jamaahId);
+    
+    if (!jamaah) return;
+
+    const amount = Number(formData.get('amount'));
+    const date = new Date(formData.get('date') as string).getTime();
+    const d = new Date(date);
+
+    const data: Partial<UBShopping> = {
+      jamaahId: jamaah.id,
+      jamaahName: jamaah.name,
+      location: jamaah.location,
+      amount,
+      date,
+      month: d.getMonth(),
+      year: d.getFullYear(),
+      note: formData.get('note') as string,
+      createdAt: editingShopping ? editingShopping.createdAt : Date.now()
+    };
+
+    try {
+      if (editingShopping) {
+        await updateDoc(doc(db, 'ub_shopping', editingShopping.id), data as any);
+      } else {
+        await addDoc(collection(db, 'ub_shopping'), data);
+      }
+      setShowForm(false);
+      setEditingShopping(null);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const handleExportExcel = () => {
+    const kks = allJamaah.filter(j => j.isKK);
+    const data = kks.map(j => ({
+      'ID Jamaah (KK)': j.memberId,
+      'Nama Kepala Keluarga': j.name,
+      'Lokasi': j.location,
+      'Total Belanja Keluarga': shoppingByKK[j.id] || 0,
+      'Status': (shoppingByKK[j.id] || 0) >= 100000 ? 'TERPENUHI' : 'BELUM TERPENUHI',
+      'Kurang': Math.max(0, 100000 - (shoppingByKK[j.id] || 0))
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Laporan Belanja UB");
+    XLSX.writeFile(wb, `Laporan_Belanja_UB_${months[selectedMonth]}_${selectedYear}.xlsx`);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+        <div>
+          <h2 className="text-3xl font-black text-slate-900 tracking-tight">Laporan Belanja UB</h2>
+          <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.2em] mt-1">Target Minimal: Rp 100.000 / Bulan</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 bg-white p-2 rounded-[2rem] border border-slate-100 shadow-sm">
+          <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-2xl border border-slate-100">
+            <Calendar className="w-4 h-4 text-emerald-600" />
+            <select 
+              value={selectedMonth} 
+              onChange={(e) => setSelectedMonth(Number(e.target.value))}
+              className="bg-transparent text-[10px] font-black uppercase tracking-widest outline-none border-none cursor-pointer text-slate-700"
+            >
+              {months.map((m, i) => <option key={m} value={i}>{m}</option>)}
+            </select>
+            <select 
+              value={selectedYear} 
+              onChange={(e) => setSelectedYear(Number(e.target.value))}
+              className="bg-transparent text-[10px] font-black uppercase tracking-widest outline-none border-none cursor-pointer text-slate-700"
+            >
+              {years.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+
+          {profile.role === 'admin' && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-slate-50 rounded-2xl border border-slate-100">
+              <MapPin className="w-4 h-4 text-emerald-600" />
+              <select 
+                value={selectedLocation} 
+                onChange={(e) => setSelectedLocation(e.target.value as any)}
+                className="bg-transparent text-[10px] font-black uppercase tracking-widest outline-none border-none cursor-pointer text-slate-700"
+              >
+                <option value="all">Semua Lokasi</option>
+                {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
+          )}
+
+          <button 
+            onClick={handleExportExcel}
+            className="p-2.5 bg-emerald-100 text-emerald-700 rounded-2xl hover:bg-emerald-200 transition-all"
+            title="Export Excel"
+          >
+            <ClipboardList className="w-5 h-5" />
+          </button>
+
+          <button 
+            onClick={() => { 
+              setEditingShopping(null); 
+              setSelectedJamaahId('');
+              setJamaahSearch('');
+              setShowForm(true); 
+            }}
+            className="px-6 py-2.5 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
+          >
+            <Plus className="w-4 h-4" />
+            Input Belanja
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="bg-emerald-600 p-6 rounded-3xl text-white shadow-xl shadow-emerald-100">
+          <p className="text-emerald-100 text-xs font-black uppercase tracking-widest mb-1">Total Belanja</p>
+          <h3 className="text-3xl font-black italic">Rp {stats.totalAmount.toLocaleString('id-ID')}</h3>
+          <p className="text-emerald-200/60 text-[10px] mt-4 font-bold uppercase tracking-wider">
+            Bulan {months[selectedMonth]} {selectedYear}
+          </p>
+        </div>
+
+        <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+          <p className="text-slate-400 text-xs font-black uppercase tracking-widest mb-1 text-[10px]">Terpenuhi (≥ 100k)</p>
+          <h3 className="text-3xl font-black text-emerald-600">{stats.metTarget}</h3>
+          <div className="w-full bg-slate-50 h-2 rounded-full mt-4 overflow-hidden border border-slate-100">
+            <div 
+              className="h-full bg-emerald-500 rounded-full" 
+              style={{ width: `${(stats.metTarget / (stats.totalJamaah || 1)) * 100}%` }} 
+            />
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+          <p className="text-slate-400 text-xs font-black uppercase tracking-widest mb-1 text-[10px]">Belum Terpenuhi</p>
+          <h3 className="text-3xl font-black text-rose-500">{stats.notMetTarget}</h3>
+          <div className="w-full bg-slate-50 h-2 rounded-full mt-4 overflow-hidden border border-slate-100">
+            <div 
+              className="h-full bg-rose-500 rounded-full" 
+              style={{ width: `${(stats.notMetTarget / (stats.totalJamaah || 1)) * 100}%` }} 
+            />
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+          <p className="text-slate-400 text-xs font-black uppercase tracking-widest mb-1 text-[10px]">Total Kepala Keluarga</p>
+          <h3 className="text-3xl font-black text-slate-900">{stats.totalJamaah}</h3>
+          <p className="text-slate-300 text-[10px] mt-4 font-bold uppercase tracking-wider italic">
+            {selectedLocation === 'all' ? 'Seluruh Lokasi' : selectedLocation}
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50/50">
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">ID / Nama Jamaah</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Lokasi</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Belanja</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Kurang</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Rincian</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {loadingJamaah || loadingShopping ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center">
+                    <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full mx-auto" />
+                  </td>
+                </tr>
+              ) : allJamaah.filter(j => j.isKK).map((j) => {
+                const total = shoppingByKK[j.id] || 0;
+                const isMet = total >= 100000;
+                const remaining = Math.max(0, 100000 - total);
+                
+                // Get all family members' IDs including KK
+                const familyIds = allJamaah.filter(member => member.id === j.id || member.kkId === j.memberId).map(m => m.id);
+                const familyRecords = shoppingRecords.filter(r => familyIds.includes(r.jamaahId));
+                
+                return (
+                  <tr key={j.id} className="hover:bg-slate-50/50 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">{j.memberId}</span>
+                        <span className="text-sm font-black text-slate-900">{j.name}</span>
+                        <span className="text-[10px] text-slate-400 font-medium">Kepala Keluarga</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{j.location}</span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={cn("text-sm font-black italic", isMet ? "text-emerald-600" : "text-slate-900")}>
+                        Rp {total.toLocaleString('id-ID')}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={cn(
+                        "px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest",
+                        isMet ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                      )}>
+                        {isMet ? 'TERPENUHI' : 'BELUM TERPENUHI'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={cn("text-xs font-bold", remaining > 0 ? "text-rose-500" : "text-slate-300")}>
+                        {remaining > 0 ? `Rp ${remaining.toLocaleString('id-ID')}` : '-'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2 flex-wrap max-w-[150px]">
+                        {familyRecords.map(r => {
+                          const recordJamaah = allJamaah.find(jm => jm.id === r.jamaahId);
+                          return (
+                            <button 
+                              key={r.id}
+                              onClick={() => { 
+                                setEditingShopping(r); 
+                                setSelectedJamaahId(r.jamaahId);
+                                setJamaahSearch(`${recordJamaah?.memberId} - ${recordJamaah?.name}`);
+                                setShowForm(true); 
+                              }}
+                              className="p-1.5 hover:bg-slate-100 rounded-lg transition-all"
+                              title={`${recordJamaah?.name}: Rp ${r.amount.toLocaleString()}`}
+                            >
+                              <div className={cn(
+                                "w-2 h-2 rounded-full",
+                                recordJamaah?.isKK ? "bg-emerald-500" : "bg-blue-400"
+                              )} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showForm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-[2.5rem] p-8 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-8">
+                <div>
+                  <h3 className="text-xl font-black text-slate-900">{editingShopping ? 'Edit Data Belanja' : 'Input Data Belanja'}</h3>
+                  <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mt-1">Usaha Bersama (UB)</p>
+                </div>
+                <button onClick={() => setShowForm(false)} className="p-2 hover:bg-slate-100 rounded-2xl transition-all">
+                  <X className="w-5 h-5 text-slate-400" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSubmit} className="space-y-6">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Pilih Jamaah</label>
+                  <div className="relative">
+                    <div className="relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input 
+                        type="text"
+                        placeholder="Cari Nama atau ID Jamaah..."
+                        value={jamaahSearch}
+                        onChange={(e) => {
+                          setJamaahSearch(e.target.value);
+                          if (!e.target.value) setSelectedJamaahId('');
+                          setIsSearchOpen(true);
+                        }}
+                        onFocus={() => setIsSearchOpen(true)}
+                        onBlur={() => setTimeout(() => setIsSearchOpen(false), 200)}
+                        className="w-full pl-11 pr-5 py-4 rounded-[1.5rem] border border-slate-100 bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-bold text-sm text-slate-700"
+                      />
+                    </div>
+                    
+                    {isSearchOpen && (
+                      <div className="absolute z-50 w-full mt-2 bg-white rounded-2xl border border-slate-100 shadow-xl overflow-hidden max-h-60 overflow-y-auto">
+                        {filteredJamaah.length > 0 ? (
+                          filteredJamaah.map(j => (
+                            <button
+                              key={j.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedJamaahId(j.id);
+                                setJamaahSearch(`${j.memberId} - ${j.name}`);
+                                setIsSearchOpen(false);
+                              }}
+                              className={cn(
+                                "w-full px-5 py-3 text-left hover:bg-slate-50 transition-colors flex flex-col",
+                                selectedJamaahId === j.id ? "bg-emerald-50" : ""
+                              )}
+                            >
+                              <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">{j.memberId}</span>
+                              <span className="text-sm font-bold text-slate-700">{j.name}</span>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-5 py-4 text-center text-slate-400 text-xs italic">Jamaah tidak ditemukan</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {/* Invisible input to keep form valid if needed, but we use state in handleSubmit */}
+                  <input type="hidden" name="jamaahId" value={selectedJamaahId} required />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Nominal (Rp)</label>
+                    <input 
+                      type="number" 
+                      name="amount" 
+                      defaultValue={editingShopping?.amount} 
+                      required 
+                      className="w-full px-5 py-4 rounded-[1.5rem] border border-slate-100 bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-black italic text-sm text-slate-900" 
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Tanggal</label>
+                    <input 
+                      type="date" 
+                      name="date" 
+                      defaultValue={editingShopping ? new Date(editingShopping.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]} 
+                      required 
+                      className="w-full px-5 py-4 rounded-[1.5rem] border border-slate-100 bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-bold text-xs text-slate-700" 
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Catatan (Opsional)</label>
+                  <textarea 
+                    name="note" 
+                    defaultValue={editingShopping?.note} 
+                    className="w-full px-5 py-4 rounded-[1.5rem] border border-slate-100 bg-slate-50 focus:bg-white outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-bold text-sm text-slate-700 min-h-[100px]" 
+                  />
+                </div>
+
+                <div className="flex gap-4 pt-4">
+                  {editingShopping && (
+                    <button 
+                      type="button"
+                      onClick={async () => {
+                        if (!db || !editingShopping) return;
+                        setIsDeleting(true);
+                        try {
+                          await deleteDoc(doc(db, 'ub_shopping', editingShopping.id));
+                          setShowForm(false);
+                          setEditingShopping(null);
+                        } finally {
+                          setIsDeleting(false);
+                        }
+                      }}
+                      className="p-4 rounded-[1.5rem] border border-rose-100 text-rose-500 hover:bg-rose-50 transition-all"
+                    >
+                      <Plus className="w-5 h-5 rotate-45" />
+                    </button>
+                  )}
+                  <button 
+                    type="submit" 
+                    disabled={isUpdating}
+                    className="flex-1 px-8 py-4 rounded-[1.5rem] bg-emerald-600 text-white font-black uppercase tracking-widest text-xs shadow-xl shadow-emerald-100 disabled:opacity-50 hover:bg-emerald-700 transition-all"
+                  >
+                    {isUpdating ? 'Menyimpan...' : editingShopping ? 'Update Data' : 'Simpan Data'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function UsersView() {
   const { db } = useFirebase();
   const { data: users, loading } = useFirestoreQuery<UserProfile>(db, 'users');
@@ -2517,6 +3033,7 @@ function DashboardContent() {
       case 'activities': return <ActivitiesView profile={profile} />;
       case 'facilities': return <FacilityView profile={profile} />;
       case 'attendance_report': return <AttendanceReportView profile={profile} />;
+      case 'ub_shopping': return <UBShoppingView profile={profile} />;
       case 'users': return <UsersView />;
       default: return <Overview profile={profile} />;
     }
@@ -2543,6 +3060,7 @@ function DashboardContent() {
           <SidebarItem icon={Calendar} label="Kegiatan" active={activeTab === 'activities'} onClick={() => setActiveTab('activities')} />
           <SidebarItem icon={Clock} label="Fasilitas" active={activeTab === 'facilities'} onClick={() => setActiveTab('facilities')} />
           <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => setActiveTab('attendance_report')} />
+          <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => setActiveTab('ub_shopping')} />
           {profile.role === 'admin' && (
             <SidebarItem icon={Plus} label="Pengguna" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
           )}
@@ -2604,6 +3122,7 @@ function DashboardContent() {
                 <SidebarItem icon={Calendar} label="Kegiatan" active={activeTab === 'activities'} onClick={() => { setActiveTab('activities'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={Clock} label="Fasilitas" active={activeTab === 'facilities'} onClick={() => { setActiveTab('facilities'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => { setActiveTab('attendance_report'); setIsMobileMenuOpen(false); }} />
+                <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => { setActiveTab('ub_shopping'); setIsMobileMenuOpen(false); }} />
                 {profile.role === 'admin' && (
                   <SidebarItem icon={Plus} label="Pengguna" active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }} />
                 )}
