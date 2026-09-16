@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import React, { useState, useEffect, useMemo } from 'react';
+import { Analytics } from "@vercel/analytics/next"
 import { 
   LayoutDashboard, 
   Users, 
