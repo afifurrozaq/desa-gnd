@@ -287,7 +287,7 @@ function PublicAttendanceView({ onBack }: { onBack: () => void }) {
           <button onClick={onBack} className="p-3 bg-slate-50 rounded-2xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-all"><X className="w-6 h-6" /></button>
           <div className="text-center">
             <h2 className="text-lg font-black uppercase tracking-widest text-emerald-600 leading-none">Absensi</h2>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-1">Jamaah Pengajian</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-1">Sambung Jamaah</p>
           </div>
           <div className="w-12"></div>
         </div>
@@ -554,7 +554,7 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <LayoutDashboard className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Masjid</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Desa GND</h1>
           <p className="text-slate-500 mt-2">Silakan masuk ke akun Anda</p>
         </div>
 
@@ -737,9 +737,9 @@ function Overview({ profile }: { profile: UserProfile }) {
   return (
     <div className="space-y-8">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-        <StatCard title="Total Jamaah" value={jamaah.length} icon={Users} color="bg-emerald-500" />
-        <StatCard title="Total KK" value={totalKK} icon={Home} color="bg-orange-500" />
-        <StatCard title="Total Luas Tanah" value={`${totalTanahArea} m²`} icon={MapIcon} color="bg-blue-500" />
+        <StatCard title={`Total Jamaah - ${profile.location || 'Desa GND'}`} value={jamaah.length} icon={Users} color="bg-emerald-500" />
+        <StatCard title={`Total KK - ${profile.location || 'Desa GND'}`} value={totalKK} icon={Home} color="bg-orange-500" />
+        <StatCard title={`Total Luas Tanah - ${profile.location || 'Desa GND'}`} value={`${totalTanahArea} m²`} icon={MapIcon} color="bg-blue-500" />
         {stats.slice(0, 2).map((stat, i) => (
           <StatCard 
             key={stat.id} 
@@ -1336,8 +1336,8 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">{isTanah ? 'Tanah Sabilillah' : 'Inventaris Barang'}</h2>
-          <p className="text-slate-500">{isTanah ? 'Kelola data tanah wakaf dan sabilillah' : 'Kelola aset dan perangkat masjid'}</p>
+          <h2 className="text-2xl font-bold text-slate-900">{isTanah ? 'Tanah Sabilillah' : 'Inventaris Sabilillah'}</h2>
+          <p className="text-slate-500">{isTanah ? 'Kelola Tanah Wakaf dan Sabilillah' : 'Kelola Inventaris Sabilillah'}</p>
         </div>
         <button 
           onClick={() => setShowForm(true)}
@@ -1587,7 +1587,7 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Kegiatan Desa Gandaria</h2>
-          <p className="text-slate-500">Kelola kegiatan Desa Gandaria harian dan mingguan</p>
+          <p className="text-slate-500">Kelola Kegiatan Desa Gandaria</p>
         </div>
         <button 
           onClick={() => setShowForm(true)}
