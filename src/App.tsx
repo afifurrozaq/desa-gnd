@@ -1586,8 +1586,8 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Kegiatan Masjid</h2>
-          <p className="text-slate-500">Kelola kegiatan harian dan mingguan</p>
+          <h2 className="text-2xl font-bold text-slate-900">Kegiatan Desa Gandaria</h2>
+          <p className="text-slate-500">Kelola kegiatan Desa Gandaria harian dan mingguan</p>
         </div>
         <button 
           onClick={() => setShowForm(true)}
@@ -2480,7 +2480,7 @@ function DashboardContent() {
           <div className="flex items-center justify-between lg:block">
             <div>
               <h1 className="text-2xl lg:text-3xl font-black text-slate-900">Selamat Datang, {profile.displayName.split(' ')[0]}!</h1>
-              <p className="text-slate-500 mt-1 hidden sm:block">Pantau perkembangan masjid hari ini.</p>
+              <p className="text-slate-500 mt-1 hidden sm:block">Sistem Manajemen Desa Gandaria</p>
             </div>
             <button 
               onClick={() => setIsMobileMenuOpen(true)}

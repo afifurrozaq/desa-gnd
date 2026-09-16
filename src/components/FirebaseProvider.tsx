@@ -37,14 +37,22 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     const initFirebase = async () => {
       try {
-        const configResponse = await fetch('/firebase-applet-config.json');
-        if (!configResponse.ok) {
-          console.warn('Firebase config not found. Please set up Firebase.');
+        const firebaseConfig = {
+          apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+          authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+          projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+          storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+          messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+          appId: import.meta.env.VITE_FIREBASE_APP_ID,
+          measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || '',
+        };
+
+        if (!firebaseConfig.apiKey || !firebaseConfig.projectId || !firebaseConfig.appId) {
+          console.warn('Firebase config not found. Please set up your .env file.');
           setLoading(false);
           return;
         }
-        const firebaseConfig = await configResponse.json();
-        
+
         let app;
         if (!getApps().length) {
           app = initializeApp(firebaseConfig);
@@ -53,8 +61,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         const authInstance = getAuth(app);
-        const firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-        
+        const firestoreDatabaseId = import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID;
+        const firestore = firestoreDatabaseId
+          ? getFirestore(app, firestoreDatabaseId)
+          : getFirestore(app);
+
         setAuth(authInstance);
         setDb(firestore);
         testConnection(firestore);
