@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   LayoutDashboard, 
@@ -530,11 +531,23 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
             displayName,
             role,
             location: role === 'pengurus' ? location : null,
+            isVerified: false,
             createdAt: Date.now()
           });
+          setError('Pendaftaran berhasil! Akun Anda sedang menunggu verifikasi dari admin.');
+          setIsRegister(false);
         }
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        if (db) {
+          const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
+          const userData = userDoc.data() as UserProfile;
+          if (!userData?.isVerified) {
+            await signOut(auth);
+            setError('Akun Anda belum diverifikasi oleh admin. Silakan hubungi admin untuk aktivasi.');
+            return;
+          }
+        }
       }
     } catch (err: any) {
       setError(err.message || 'Gagal masuk');
@@ -554,7 +567,7 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <LayoutDashboard className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Desa GND</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Masjid</h1>
           <p className="text-slate-500 mt-2">Silakan masuk ke akun Anda</p>
         </div>
 
@@ -1906,6 +1919,7 @@ function FacilityView({ profile }: { profile: UserProfile }) {
 
 function AttendanceReportView({ profile }: { profile: UserProfile }) {
   const { db } = useFirebase();
+  const [selectedDay, setSelectedDay] = useState<number | 'all'>('all');
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [editingAttendance, setEditingAttendance] = useState<Attendance | null>(null);
@@ -1931,14 +1945,31 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
   const filteredData = useMemo(() => {
     return attendanceData.filter(a => {
       const date = new Date(a.date);
-      return date.getMonth() === selectedMonth && date.getFullYear() === selectedYear;
+      const matchMonth = date.getMonth() === selectedMonth;
+      const matchYear = date.getFullYear() === selectedYear;
+      const matchDay = selectedDay === 'all' || date.getDate() === selectedDay;
+      return matchMonth && matchYear && matchDay;
     }).sort((a, b) => b.date - a.date);
-  }, [attendanceData, selectedMonth, selectedYear]);
+  }, [attendanceData, selectedDay, selectedMonth, selectedYear]);
+
+  const daysInMonth = useMemo(() => {
+    return new Date(selectedYear, selectedMonth + 1, 0).getDate();
+  }, [selectedMonth, selectedYear]);
+
+  const years = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const result = [];
+    for (let i = currentYear - 2; i <= currentYear + 1; i++) {
+      result.push(i);
+    }
+    return result;
+  }, []);
 
   const stats = useMemo(() => {
     const total = filteredData.length;
     const hadir = filteredData.filter(a => a.status === 'hadir' || !a.status).length;
     const izin = filteredData.filter(a => a.status === 'izin').length;
+    const confirmed = filteredData.filter(a => a.isConfirmed).length;
     const byCategory = filteredData.reduce((acc, curr) => {
       acc[curr.category] = (acc[curr.category] || 0) + 1;
       return acc;
@@ -1947,7 +1978,44 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
       acc[curr.sessionType] = (acc[curr.sessionType] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
-    return { total, hadir, izin, byCategory, bySession };
+    return { total, hadir, izin, confirmed, byCategory, bySession };
+  }, [filteredData]);
+
+  const handleExportExcel = () => {
+    const data = filteredData.map(a => ({
+      'Hari': a.day,
+      'Tanggal': new Date(a.date).toLocaleDateString('id-ID'),
+      'Jam': new Date(a.date).toLocaleTimeString('id-ID'),
+      'Nama Jamaah': a.jamaahName,
+      'Kategori': a.category,
+      'Sesi': a.sessionType,
+      'Status': a.status || 'hadir',
+      'Keterangan': a.reason || '-',
+      'Lokasi': a.location,
+      'Terkonfirmasi': a.isConfirmed ? 'Ya' : 'Belum'
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Laporan Absensi");
+    XLSX.writeFile(wb, `Laporan_Absensi_${months[selectedMonth]}_${selectedYear}.xlsx`);
+  };
+
+  const handleConfirm = async (id: string, current: boolean) => {
+    if (!db) return;
+    await updateDoc(doc(db, 'attendance', id), {
+      isConfirmed: !current
+    });
+  };
+
+  const groupedData = useMemo(() => {
+    const groups: Record<string, Attendance[]> = {};
+    filteredData.forEach(a => {
+      const dateKey = new Date(a.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+      if (!groups[dateKey]) groups[dateKey] = [];
+      groups[dateKey].push(a);
+    });
+    return groups;
   }, [filteredData]);
 
   return (
@@ -1958,50 +2026,67 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
           <p className="text-slate-500 mt-1">Data kehadiran jamaah per bulan</p>
         </div>
         
-        <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-100 shadow-sm">
-          <button 
-            onClick={() => {
-              if (selectedMonth === 0) {
-                setSelectedMonth(11);
-                setSelectedYear(v => v - 1);
-              } else {
-                setSelectedMonth(v => v - 1);
-              }
-            }}
-            className="p-2 hover:bg-slate-50 rounded-xl text-slate-400"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <div className="px-4 font-bold text-slate-700 min-w-[140px] text-center">
-            {months[selectedMonth]} {selectedYear}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 bg-white p-2 rounded-2xl border border-slate-100 shadow-sm">
+            <div className="flex items-center gap-1">
+              <select 
+                value={selectedDay} 
+                onChange={(e) => setSelectedDay(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
+                className="bg-transparent border-none outline-none font-bold text-slate-700 text-sm px-2 cursor-pointer focus:ring-0"
+              >
+                <option value="all">Semua Tgl</option>
+                {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+              <div className="w-px h-4 bg-slate-100 mx-1" />
+              <select 
+                value={selectedMonth} 
+                onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                className="bg-transparent border-none outline-none font-bold text-slate-700 text-sm px-2 cursor-pointer focus:ring-0"
+              >
+                {months.map((m, i) => (
+                  <option key={m} value={i}>{m}</option>
+                ))}
+              </select>
+              <div className="w-px h-4 bg-slate-100 mx-1" />
+              <select 
+                value={selectedYear} 
+                onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+                className="bg-transparent border-none outline-none font-bold text-slate-700 text-sm px-2 cursor-pointer focus:ring-0"
+              >
+                {years.map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+            </div>
           </div>
+          
           <button 
-            onClick={() => {
-              if (selectedMonth === 11) {
-                setSelectedMonth(0);
-                setSelectedYear(v => v + 1);
-              } else {
-                setSelectedMonth(v => v + 1);
-              }
-            }}
-            className="p-2 hover:bg-slate-50 rounded-xl text-slate-400"
+            onClick={handleExportExcel}
+            className="px-4 py-2.5 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
           >
-            <ChevronRight className="w-5 h-5" />
+            <ClipboardList className="w-4 h-4" />
+            Excel
           </button>
         </div>
-      </div>
+    </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-emerald-600 p-6 rounded-3xl text-white shadow-xl shadow-emerald-100">
           <p className="text-emerald-100 text-xs font-black uppercase tracking-widest mb-1">Total Hadir</p>
           <h3 className="text-4xl font-black">{stats.hadir}</h3>
-          <p className="text-emerald-200/60 text-[10px] mt-4 font-bold uppercase tracking-wider italic">Bulan {months[selectedMonth]}</p>
+          <p className="text-emerald-200/60 text-[10px] mt-4 font-bold uppercase tracking-wider italic">
+            {selectedDay === 'all' ? `Bulan ${months[selectedMonth]}` : `${selectedDay} ${months[selectedMonth]} ${selectedYear}`}
+          </p>
         </div>
 
         <div className="bg-amber-500 p-6 rounded-3xl text-white shadow-xl shadow-amber-100">
           <p className="text-amber-100 text-xs font-black uppercase tracking-widest mb-1">Total Izin</p>
           <h3 className="text-4xl font-black">{stats.izin}</h3>
-          <p className="text-amber-200/60 text-[10px] mt-4 font-bold uppercase tracking-wider italic">Bulan {months[selectedMonth]}</p>
+          <p className="text-amber-200/60 text-[10px] mt-4 font-bold uppercase tracking-wider italic">
+            {selectedDay === 'all' ? `Bulan ${months[selectedMonth]}` : `${selectedDay} ${months[selectedMonth]} ${selectedYear}`}
+          </p>
         </div>
         
         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
@@ -2042,6 +2127,7 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Sesi</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Keterangan</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Konfirmasi</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Lokasi</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Aksi</th>
               </tr>
@@ -2049,63 +2135,86 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
             <tbody className="divide-y divide-slate-50">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center">
+                  <td colSpan={10} className="px-6 py-12 text-center">
                     <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full mx-auto" />
                   </td>
                 </tr>
-              ) : filteredData.length > 0 ? (
-                filteredData.map((a) => (
-                  <tr key={a.id} className="hover:bg-slate-50 transition-colors group">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-slate-100 flex flex-col items-center justify-center group-hover:bg-white transition-colors">
-                          <span className="text-[10px] font-black text-slate-400 uppercase leading-none">{new Date(a.date).toLocaleDateString('id-ID', { weekday: 'short' })}</span>
-                          <span className="text-sm font-black text-slate-900 leading-none mt-0.5">{new Date(a.date).getDate()}</span>
-                        </div>
-                        <div className="text-[10px] text-slate-400 font-bold">
-                          {new Date(a.date).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <p className="font-black text-slate-900 text-sm">{a.jamaahName}</p>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-[9px] font-black uppercase tracking-wider">{a.category}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={cn(
-                        "px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider",
-                        a.sessionType === 'Kelompok' ? "bg-blue-50 text-blue-700" : 
-                        a.sessionType === 'Desa' ? "bg-purple-50 text-purple-700" : "bg-amber-50 text-amber-700"
-                      )}>{a.sessionType}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={cn(
-                        "px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider",
-                        a.status === 'izin' ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
-                      )}>{a.status || 'hadir'}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <p className="text-xs text-slate-500 font-medium max-w-[200px] truncate" title={a.reason}>{a.reason || '-'}</p>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2 text-slate-500 text-xs font-bold">
-                        <MapPin className="w-3 h-3 text-slate-300" />
-                        {a.location}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex gap-3 justify-end">
-                        <button onClick={() => setEditingAttendance(a)} className="text-emerald-600 hover:text-emerald-700 font-bold text-xs uppercase tracking-wider">Edit</button>
-                        <button onClick={() => setDeleteId(a.id)} className="text-red-500 hover:text-red-600 font-bold text-xs uppercase tracking-wider">Hapus</button>
-                      </div>
-                    </td>
-                  </tr>
+              ) : Object.keys(groupedData).length > 0 ? (
+                Object.entries(groupedData).map(([date, items]: [string, Attendance[]]) => (
+                  <React.Fragment key={date}>
+                    <tr className="bg-slate-50/30">
+                      <td colSpan={10} className="px-6 py-3 text-[10px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50/30">
+                        {date} ({items.length} Absensi)
+                      </td>
+                    </tr>
+                    {items.map((a) => (
+                      <tr key={a.id} className="hover:bg-slate-50 transition-colors group">
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-slate-100 flex flex-col items-center justify-center group-hover:bg-white transition-colors">
+                              <span className="text-[10px] font-black text-slate-400 uppercase leading-none">{new Date(a.date).toLocaleDateString('id-ID', { weekday: 'short' })}</span>
+                              <span className="text-sm font-black text-slate-900 leading-none mt-0.5">{new Date(a.date).getDate()}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-bold">
+                              {new Date(a.date).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="font-black text-slate-900 text-sm">{a.jamaahName}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-[9px] font-black uppercase tracking-wider">{a.category}</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={cn(
+                            "px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider",
+                            a.sessionType === 'Kelompok' ? "bg-blue-50 text-blue-700" : 
+                            a.sessionType === 'Desa' ? "bg-purple-50 text-purple-700" : "bg-amber-50 text-amber-700"
+                          )}>{a.sessionType}</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={cn(
+                            "px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider",
+                            a.status === 'izin' ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+                          )}>{a.status || 'hadir'}</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-xs text-slate-500 font-medium max-w-[200px] truncate" title={a.reason}>{a.reason || '-'}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <button 
+                            onClick={() => handleConfirm(a.id, !!a.isConfirmed)}
+                            disabled={profile.role !== 'pengurus' && profile.role !== 'admin'}
+                            className={cn(
+                              "px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all",
+                              a.isConfirmed 
+                                ? "bg-emerald-100 text-emerald-700" 
+                                : "bg-slate-100 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"
+                            )}
+                          >
+                            {a.isConfirmed ? 'Datang' : 'Konfirmasi'}
+                          </button>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2 text-slate-500 text-xs font-bold">
+                            <MapPin className="w-3 h-3 text-slate-300" />
+                            {a.location}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex gap-3 justify-end">
+                            <button onClick={() => setEditingAttendance(a)} className="text-emerald-600 hover:text-emerald-700 font-bold text-xs uppercase tracking-wider">Edit</button>
+                            <button onClick={() => setDeleteId(a.id)} className="text-red-500 hover:text-red-600 font-bold text-xs uppercase tracking-wider">Hapus</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={8} className="px-6 py-20 text-center">
+                  <td colSpan={10} className="px-6 py-20 text-center">
                     <div className="max-w-[200px] mx-auto opacity-20 mb-4 grayscale">
                       <ClipboardList className="w-12 h-12 mx-auto text-slate-900" />
                     </div>
@@ -2205,6 +2314,13 @@ function UsersView() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const toggleVerify = async (uid: string, current: boolean) => {
+    if (!db) return;
+    await updateDoc(doc(db, 'users', uid), {
+      isVerified: !current
+    });
+  };
+
   const handleUpdate = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!db || !editingUser) return;
@@ -2234,6 +2350,7 @@ function UsersView() {
               <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Email</th>
               <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Role</th>
               <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Lokasi</th>
+              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Verifikasi</th>
               <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Aksi</th>
             </tr>
           </thead>
@@ -2251,6 +2368,19 @@ function UsersView() {
                   </span>
                 </td>
                 <td className="px-6 py-4 text-slate-600 font-medium">{u.location || '-'}</td>
+                <td className="px-6 py-4">
+                  <button 
+                    onClick={() => toggleVerify(u.uid, u.isVerified)}
+                    className={cn(
+                      "px-3 py-1 rounded-full text-[10px] font-black uppercase transition-all",
+                      u.isVerified 
+                        ? "bg-emerald-100 text-emerald-700" 
+                        : "bg-amber-100 text-amber-700 hover:bg-emerald-100"
+                    )}
+                  >
+                    {u.isVerified ? 'Terverifikasi' : 'Belum'}
+                  </button>
+                </td>
                 <td className="px-6 py-4">
                   <div className="flex gap-3">
                     <button onClick={() => setEditingUser(u)} className="text-emerald-600 hover:text-emerald-700 font-bold text-sm">Edit</button>
@@ -2358,6 +2488,24 @@ function DashboardContent() {
   }
 
   if (!user || !profile) return <LoginView onAttendanceMode={() => setIsAttendanceMode(true)} />;
+
+  if (!profile.isVerified) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 text-center">
+        <div className="bg-white p-10 rounded-3xl shadow-xl max-w-sm border border-slate-100">
+          <AlertCircle className="w-16 h-16 text-amber-500 mx-auto mb-6" />
+          <h2 className="text-2xl font-bold text-slate-900 mb-4 tracking-tight">Akun Belum Aktif</h2>
+          <p className="text-slate-500 mb-8 font-medium leading-relaxed">Akun Anda sedang menunggu verifikasi dari admin. Silakan hubungi admin untuk aktivasi agar dapat mengakses dashboard.</p>
+          <button 
+            onClick={() => auth && signOut(auth)} 
+            className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200"
+          >
+            Keluar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const renderContent = () => {
     switch (activeTab) {

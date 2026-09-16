@@ -49,9 +49,10 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.auth.uid == uid && 
-        incoming().keys().hasAll(['uid', 'email', 'role', 'createdAt']) &&
+        incoming().keys().hasAll(['uid', 'email', 'role', 'createdAt', 'isVerified']) &&
         incoming().role in ['admin', 'pengurus'] &&
-        incoming().uid == request.auth.uid;
+        incoming().uid == request.auth.uid &&
+        incoming().isVerified == false;
       allow update: if isSignedIn() && (request.auth.uid == uid || isAdmin()) &&
         (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'location']));
       allow delete: if isAdmin();

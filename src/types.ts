@@ -18,6 +18,7 @@ export interface UserProfile {
   displayName: string;
   role: UserRole;
   location?: MosqueLocation; // Only for 'pengurus'
+  isVerified: boolean;
   createdAt: number;
 }
 
@@ -82,4 +83,5 @@ export interface Attendance {
   day: string;
   status: 'hadir' | 'izin';
   reason?: string;
+  isConfirmed?: boolean;
 }
