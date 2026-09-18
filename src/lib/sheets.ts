@@ -96,13 +96,18 @@ export const clearSheetMemoryCache = (collectionName?: string) => {
  * Fast GViz fetch for public spreadsheets (sub-150ms directly from Google CDN)
  */
 const fetchViaGViz = async (spreadsheetId: string, sheetName: string): Promise<SheetData | null> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    try {
+      controller.abort('timeout');
+    } catch {
+      controller.abort();
+    }
+  }, 4000);
+
   try {
     const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3500);
-
     const gvizResponse = await fetch(gvizUrl, { signal: controller.signal });
-    clearTimeout(timeoutId);
 
     if (gvizResponse.ok) {
       const text = await gvizResponse.text();
@@ -122,8 +127,13 @@ const fetchViaGViz = async (spreadsheetId: string, sheetName: string): Promise<S
         return { range: `${sheetName}!A:ZZ`, values };
       }
     }
-  } catch (err) {
-    // Non-fatal, will fall back
+  } catch (err: any) {
+    // Graceful fallback - ignore AbortError/timeout
+    if (err?.name !== 'AbortError') {
+      // quiet fallback
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
   return null;
 };
@@ -151,17 +161,22 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
 
   // 2. Try with OAuth Access Token first if provided (fast direct authorized access to Google Sheets API)
   if (accessToken) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort('timeout');
+      } catch {
+        controller.abort();
+      }
+    }, 6000);
 
+    try {
       const response = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
 
       if (response.ok) {
         const json = await response.json();
@@ -173,8 +188,12 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
         // Token is invalid/expired - clear it so subsequent calls don't waste time
         localStorage.removeItem('app_access_token');
       }
-    } catch (err) {
-      console.warn('[Sheets] Token request network error:', err);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError' && !String(err?.message || '').includes('aborted')) {
+        console.warn('[Sheets] Token request network error:', err);
+      }
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
@@ -188,13 +207,19 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
   // 4. Try with Apps Script Web App URL (Token-Free read fallback)
   const appsScriptUrl = (import.meta as any).env?.VITE_APPS_SCRIPT_URL || localStorage.getItem('app_script_url');
   if (appsScriptUrl) {
+    const controller = new AbortController();
+    // Allow up to 10s for Google Apps Script execution cold start
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort('Apps Script timeout');
+      } catch {
+        controller.abort();
+      }
+    }, 10000);
+
     try {
       const fetchUrl = `${appsScriptUrl}${appsScriptUrl.includes('?') ? '&' : '?'}collection=${encodeURIComponent(sheetName)}`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000);
-
       const res = await fetch(fetchUrl, { signal: controller.signal });
-      clearTimeout(timeoutId);
 
       if (res.ok) {
         const json = await res.json();
@@ -204,23 +229,44 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
           return result;
         }
       }
-    } catch (err) {
-      console.warn('[Sheets] Apps Script GET fetch error:', err);
+    } catch (err: any) {
+      const isAborted = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
+      if (!isAborted) {
+        console.warn('[Sheets] Apps Script GET fetch error:', err);
+      }
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
   // 5. Try with API Key (works if sheet is shared as "Anyone with link can view")
   const apiKey = (import.meta as any).env?.VITE_GOOGLE_API_KEY || FALLBACK_API_KEY;
   if (apiKey) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort('API key timeout');
+      } catch {
+        controller.abort();
+      }
+    }, 6000);
+
     try {
-      const keyResponse = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}?key=${apiKey}`);
+      const keyResponse = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}?key=${apiKey}`, {
+        signal: controller.signal
+      });
       if (keyResponse.ok) {
         const json = await keyResponse.json();
         memoryCache.set(cacheKey, { data: json, expiresAt: now + CACHE_TTL_MS });
         return json;
       }
-    } catch (err) {
-      console.warn('[Sheets] API key fetch error:', err);
+    } catch (err: any) {
+      const isAborted = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
+      if (!isAborted) {
+        console.warn('[Sheets] API key fetch error:', err);
+      }
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 

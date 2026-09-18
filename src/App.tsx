@@ -36,9 +36,24 @@ import {
   Copy,
   Check,
   ExternalLink,
-  ShieldCheck
+  ShieldCheck,
+  QrCode,
+  Download,
+  Printer,
+  ChevronDown,
+  Share2,
+  Link as LinkIcon,
+  UserPlus,
+  Send,
+  CalendarDays,
+  Timer,
+  Sparkles,
+  CheckCheck,
+  FileSpreadsheet
 } from 'lucide-react';
+import { QRCodeCanvas } from 'qrcode.react';
 import { ToastProvider, useToast } from './components/ToastContext';
+import { CacahJiwaView } from './components/CacahJiwaView';
 import { 
   LineChart, 
   Line, 
@@ -68,7 +83,7 @@ import { useDataQuery, where } from './hooks/useDataQuery';
 import { createSpreadsheet, updateSheetValues, getSheetValues } from './lib/sheets';
 import { saveData, deleteData, clearSheetMemoryCache } from './lib/dataService';
 import { cn } from './lib/utils';
-import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping } from './types';
+import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping, RegistrationLink } from './types';
 
 // --- Firestore Error Handling ---
 enum OperationType {
@@ -179,26 +194,166 @@ function SidebarItem({ icon: Icon, label, active, onClick }: { icon: any; label:
 function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, spreadsheetId?: string }) {
   const { accessToken } = useFirebase();
   const { showToast } = useToast();
-  const [selectedLocation, setSelectedLocation] = useState<MosqueLocation | ''>('');
+  
+  const [selectedLocation, setSelectedLocation] = useState<MosqueLocation | ''>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const loc = params.get('location');
+      if (loc && ['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].includes(loc)) {
+        return loc as MosqueLocation;
+      }
+    }
+    return '';
+  });
+
+  const [isFromQR] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return Boolean(params.get('location'));
+    }
+    return false;
+  });
+
+  const [qrDateParam] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('date') || '';
+    }
+    return '';
+  });
+
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedJamaah, setSelectedJamaah] = useState<Jamaah | null>(null);
-  const [sessionType, setSessionType] = useState<'Kelompok' | 'Desa' | 'Acara'>('Kelompok');
+  
+  const [sessionType, setSessionType] = useState<'Kelompok' | 'Desa' | 'Acara'>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const sess = params.get('session');
+      if (sess && ['Kelompok', 'Desa', 'Acara'].includes(sess)) {
+        return sess as 'Kelompok' | 'Desa' | 'Acara';
+      }
+    }
+    return 'Kelompok';
+  });
+
   const [status, setStatus] = useState<'hadir' | 'izin'>('hadir');
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [showAlreadyAttended, setShowAlreadyAttended] = useState(false);
 
+  // QR Code Generator Modal State
+  const [showQRModal, setShowQRModal] = useState(false);
+  const [qrTargetLocation, setQrTargetLocation] = useState<MosqueLocation>(() => {
+    return (selectedLocation as MosqueLocation) || 'Kramat Batu';
+  });
+  const [qrTargetDate, setQrTargetDate] = useState(() => {
+    const today = new Date();
+    return today.toISOString().split('T')[0];
+  });
+  const [qrTargetSession, setQrTargetSession] = useState<'Kelompok' | 'Desa' | 'Acara'>('Kelompok');
+  const [copiedLink, setCopiedLink] = useState(false);
+
   const { data: jamaahList } = useDataQuery<Jamaah>('jamaah');
   const { data: attendanceList } = useDataQuery<Attendance>('attendance');
 
   const filteredJamaah = useMemo(() => {
     if (!searchTerm || selectedJamaah) return [];
-    return jamaahList.filter(j => 
-      j.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      j.memberId.toLowerCase().includes(searchTerm.toLowerCase())
-    ).slice(0, 5);
-  }, [jamaahList, searchTerm, selectedJamaah]);
+    return jamaahList.filter(j => {
+      const matchesSearch = j.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+        j.memberId.toLowerCase().includes(searchTerm.toLowerCase());
+      if (selectedLocation) {
+        return matchesSearch && j.location === selectedLocation;
+      }
+      return matchesSearch;
+    }).slice(0, 5);
+  }, [jamaahList, searchTerm, selectedJamaah, selectedLocation]);
+
+  const qrPayloadUrl = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    const baseUrl = `${window.location.origin}${window.location.pathname}`;
+    const params = new URLSearchParams();
+    params.set('attendance', 'true');
+    params.set('location', qrTargetLocation);
+    params.set('date', qrTargetDate);
+    params.set('session', qrTargetSession);
+    return `${baseUrl}?${params.toString()}`;
+  }, [qrTargetLocation, qrTargetDate, qrTargetSession]);
+
+  const handleDownloadQR = () => {
+    const canvas = document.getElementById('attendance-qr-canvas') as HTMLCanvasElement;
+    if (!canvas) return;
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `QR_Presensi_${qrTargetLocation.replace(/\s+/g, '_')}_${qrTargetDate}.png`;
+    a.click();
+    showToast('Gambar QR Code berhasil diunduh!', 'success');
+  };
+
+  const handlePrintQR = () => {
+    const canvas = document.getElementById('attendance-qr-canvas') as HTMLCanvasElement;
+    const dataUrl = canvas ? canvas.toDataURL('image/png') : '';
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      window.print();
+      return;
+    }
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Cetak QR Presensi - ${qrTargetLocation}</title>
+          <style>
+            body { font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 40px; margin: 0; background: #f8fafc; }
+            .card { max-width: 440px; margin: 0 auto; background: #fff; border: 2px solid #059669; border-radius: 28px; padding: 36px 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); }
+            .tag { display: inline-block; background: #ecfdf5; color: #047857; font-weight: 800; font-size: 11px; padding: 6px 14px; border-radius: 9999px; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; }
+            h1 { color: #0f172a; margin: 0 0 4px; font-size: 24px; font-weight: 900; }
+            .loc { color: #059669; font-size: 18px; font-weight: 800; margin-bottom: 4px; }
+            .meta { color: #64748b; font-size: 13px; font-weight: 600; margin-bottom: 24px; }
+            .qr-wrapper { display: inline-block; padding: 14px; border: 1px solid #e2e8f0; border-radius: 20px; background: #fff; margin-bottom: 20px; }
+            img { width: 240px; height: 240px; display: block; }
+            .box { background: #f8fafc; border-radius: 16px; padding: 14px 18px; text-align: left; font-size: 12px; color: #334155; line-height: 1.6; border: 1px solid #f1f5f9; }
+            .desc { margin-top: 18px; font-size: 12px; color: #059669; font-weight: 700; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="tag">Presensi Sambung Jamaah</div>
+            <h1>Daftar Hadir Pengajian</h1>
+            <div class="loc">Kelompok ${qrTargetLocation}</div>
+            <div class="meta">Tanggal: ${qrTargetDate} • Sesi: ${qrTargetSession}</div>
+            <div class="qr-wrapper">
+              <img src="${dataUrl}" alt="QR Presensi" />
+            </div>
+            <div class="box">
+              <div>📍 <strong>Lokasi:</strong> Kelompok ${qrTargetLocation}</div>
+              <div>📅 <strong>Tanggal:</strong> ${qrTargetDate}</div>
+              <div>📖 <strong>Sesi:</strong> ${qrTargetSession}</div>
+            </div>
+            <div class="desc">Arahkan kamera HP ke QR Code untuk mengisi absensi secara instan.</div>
+          </div>
+          <script>
+            window.onload = function() {
+              setTimeout(function() { window.print(); }, 250);
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(qrPayloadUrl);
+      setCopiedLink(true);
+      showToast('Tautan presensi berhasil disalin ke clipboard!', 'success');
+      setTimeout(() => setCopiedLink(false), 2500);
+    } catch {
+      showToast('Gagal menyalin tautan', 'error');
+    }
+  };
 
   const handleSubmit = async () => {
     if (!selectedJamaah) return;
@@ -293,14 +448,74 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-white p-8 lg:p-10 rounded-[2.5rem] shadow-2xl max-w-md w-full border border-slate-100 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-2 bg-emerald-500" />
         
-        <div className="flex items-center justify-between mb-10">
+        <div className="flex items-center justify-between mb-8">
           <button onClick={onBack} className="p-3 bg-slate-50 rounded-2xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-all"><X className="w-6 h-6" /></button>
           <div className="text-center">
             <h2 className="text-lg font-black uppercase tracking-widest text-emerald-600 leading-none">Absensi</h2>
             <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-1">Sambung Jamaah</p>
           </div>
-          <div className="w-12"></div>
+          <button 
+            type="button"
+            onClick={() => {
+              if (selectedLocation) {
+                setQrTargetLocation(selectedLocation as MosqueLocation);
+              }
+              setShowQRModal(true);
+            }}
+            title="Generate QR Code Presensi" 
+            className="p-3 bg-emerald-50 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-100 rounded-2xl transition-all flex items-center justify-center shadow-sm"
+          >
+            <QrCode className="w-6 h-6" />
+          </button>
         </div>
+
+        {/* QR Code Quick Action Banner */}
+        <div className="mb-6 p-3.5 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-2xl border border-emerald-100 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm">
+              <QrCode className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-black text-slate-800">QR Code Presensi</p>
+              <p className="text-[10px] text-slate-500 font-medium">Buat QR code lokasi & tanggal untuk jamaah</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (selectedLocation) {
+                setQrTargetLocation(selectedLocation as MosqueLocation);
+              }
+              setShowQRModal(true);
+            }}
+            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black transition-all shadow-sm flex items-center gap-1.5 active:scale-95"
+          >
+            <QrCode className="w-3.5 h-3.5" />
+            Buat QR
+          </button>
+        </div>
+
+        {/* Notifikasi aktif jika jamaah membuka lewat scan QR */}
+        {isFromQR && selectedLocation && (
+          <div className="mb-6 p-3.5 bg-emerald-600 text-white rounded-2xl shadow-md flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm">
+                <CheckCircle2 className="w-4 h-4 text-white" />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-emerald-100">Scan QR Terverifikasi</p>
+                <p className="text-xs font-black text-white">Kelompok {selectedLocation} {qrDateParam ? `• ${qrDateParam}` : ''}</p>
+              </div>
+            </div>
+            <button 
+              type="button" 
+              onClick={() => { setSelectedLocation(''); setSelectedJamaah(null); }}
+              className="text-[10px] font-bold bg-white/20 hover:bg-white/30 text-white px-2.5 py-1 rounded-lg transition-colors"
+            >
+              Ganti Lokasi
+            </button>
+          </div>
+        )}
 
         <div className="mb-8 p-4 bg-amber-50 rounded-2xl border border-amber-100">
           <div className="flex items-start gap-3">
@@ -360,9 +575,9 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                       exit={{ opacity: 0, y: -10 }}
                       className="absolute z-10 left-0 right-0 mt-3 bg-white rounded-3xl border border-slate-100 shadow-2xl overflow-hidden max-h-60 overflow-y-auto ring-1 ring-slate-200"
                     >
-                      {filteredJamaah.map(j => (
+                      {filteredJamaah.map((j, idx) => (
                         <button
-                          key={j.id}
+                          key={j.id ? `${j.id}-${idx}` : `search-j-${idx}`}
                           onClick={() => {
                             setSelectedJamaah(j);
                             setSearchTerm(j.name);
@@ -475,6 +690,145 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
       </motion.div>
 
       <AnimatePresence>
+        {showQRModal && (
+          <motion.div 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: 1 }} 
+            exit={{ opacity: 0 }} 
+            className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-[100] overflow-y-auto"
+          >
+            <motion.div 
+              initial={{ scale: 0.92, y: 15 }} 
+              animate={{ scale: 1, y: 0 }} 
+              exit={{ scale: 0.92, y: 15 }}
+              className="bg-white rounded-[2.5rem] p-6 sm:p-8 max-w-md w-full shadow-2xl border border-slate-100 relative my-8"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                    <QrCode className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900 leading-tight">QR Code Presensi</h3>
+                    <p className="text-xs text-slate-500 font-medium">Embed lokasi & tanggal pengajian</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowQRModal(false)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Konfigurasi Lokasi, Tanggal & Sesi */}
+              <div className="space-y-4 mb-6">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                    1. Lokasi Masjid
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => (
+                      <button
+                        key={loc}
+                        type="button"
+                        onClick={() => setQrTargetLocation(loc as MosqueLocation)}
+                        className={cn(
+                          "px-2 py-2 rounded-xl text-[11px] font-bold transition-all truncate text-center",
+                          qrTargetLocation === loc 
+                            ? "bg-emerald-600 text-white shadow-sm font-black" 
+                            : "bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200/60"
+                        )}
+                      >
+                        {loc}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                      2. Tanggal Presensi
+                    </label>
+                    <input 
+                      type="date"
+                      value={qrTargetDate}
+                      onChange={(e) => setQrTargetDate(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                      3. Sesi Pengajian
+                    </label>
+                    <select
+                      value={qrTargetSession}
+                      onChange={(e) => setQrTargetSession(e.target.value as any)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50"
+                    >
+                      <option value="Kelompok">Kelompok</option>
+                      <option value="Desa">Desa</option>
+                      <option value="Acara">Acara</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Preview QR Code Card */}
+              <div className="p-5 bg-gradient-to-b from-slate-50 to-emerald-50/40 rounded-2xl border border-emerald-100 text-center mb-6">
+                <div className="inline-block p-3 bg-white rounded-2xl shadow-md border border-slate-100 mb-3">
+                  <QRCodeCanvas
+                    id="attendance-qr-canvas"
+                    value={qrPayloadUrl}
+                    size={190}
+                    level="H"
+                    marginSize={2}
+                  />
+                </div>
+                <p className="text-xs font-black text-slate-900">Kelompok {qrTargetLocation}</p>
+                <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                  Tanggal: {qrTargetDate} • Sesi {qrTargetSession}
+                </p>
+                <p className="text-[10px] text-emerald-700 font-bold mt-2 bg-emerald-100/70 py-1 px-3 rounded-lg inline-block">
+                  Arahkan kamera HP ke QR Code untuk membuka presensi instan
+                </p>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleDownloadQR}
+                    className="py-3 px-4 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95"
+                  >
+                    <Download className="w-4 h-4" />
+                    Unduh Gambar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePrintQR}
+                    className="py-3 px-4 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-sm active:scale-95"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Cetak QR
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className="w-full py-2.5 px-4 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                >
+                  {copiedLink ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-slate-500" />}
+                  {copiedLink ? 'Tautan Disalin ke Clipboard!' : 'Salin Tautan Presensi'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {showAlreadyAttended && (
           <motion.div 
             initial={{ opacity: 0 }} 
@@ -508,7 +862,1605 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
   );
 }
 
-function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
+// --- Public Jamaah Self-Registration View ---
+function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () => void, spreadsheetId?: string }) {
+  const { accessToken } = useFirebase();
+  const { showToast } = useToast();
+  const { data: jamaahList, loading: loadingJamaah } = useDataQuery<Jamaah>('jamaah');
+
+  // Decode URL token payload
+  const [tokenData, setTokenData] = useState<{
+    id?: string;
+    location?: MosqueLocation | 'Seluruh Lokasi';
+    expiresAt?: number;
+    createdAt?: number;
+    createdBy?: string;
+    note?: string;
+  } | null>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const rawToken = params.get('token') || params.get('reg_token');
+      if (rawToken) {
+        try {
+          const decodedStr = decodeURIComponent(atob(rawToken));
+          return JSON.parse(decodedStr);
+        } catch (e) {
+          try {
+            return JSON.parse(atob(rawToken));
+          } catch (e2) {
+            console.warn('Failed to parse registration token:', e2);
+          }
+        }
+      }
+      // Fallback if individual query params were supplied
+      const loc = params.get('location') as MosqueLocation;
+      const exp = params.get('expires');
+      if (loc || exp) {
+        return {
+          location: loc || 'Seluruh Lokasi',
+          expiresAt: exp ? Number(exp) : undefined,
+          note: params.get('note') || undefined
+        };
+      }
+    }
+    return null;
+  });
+
+  // Calculate expiration status & remaining time
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const isExpired = useMemo(() => {
+    if (!tokenData?.expiresAt) return false;
+    return currentTime > tokenData.expiresAt;
+  }, [tokenData?.expiresAt, currentTime]);
+
+  const remainingTimeString = useMemo(() => {
+    if (!tokenData?.expiresAt) return null;
+    const diff = tokenData.expiresAt - currentTime;
+    if (diff <= 0) return 'Kedaluwarsa';
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+    if (days > 0) return `${days} hari ${hours} jam lagi`;
+    if (hours > 0) return `${hours} jam ${minutes} menit lagi`;
+    return `${minutes} menit ${seconds} detik lagi`;
+  }, [tokenData?.expiresAt, currentTime]);
+
+  // Form State
+  const [activeStep, setActiveStep] = useState<'identitas' | 'keluarga' | 'keilmuan'>('identitas');
+  const [selectedLocation, setSelectedLocation] = useState<MosqueLocation>(() => {
+    if (tokenData?.location && tokenData.location !== 'Seluruh Lokasi') {
+      return tokenData.location as MosqueLocation;
+    }
+    return 'Kramat Batu';
+  });
+
+  const [isKK, setIsKK] = useState(true);
+  const [selectedKKId, setSelectedKKId] = useState<string>('');
+  const [kkSearchTerm, setKkSearchTerm] = useState<string>('');
+  const [isKkDropdownOpen, setIsKkDropdownOpen] = useState<boolean>(false);
+  const [base64Photo, setBase64Photo] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [registeredResult, setRegisteredResult] = useState<{
+    memberId: string;
+    name: string;
+    location: string;
+    isKK: boolean;
+    phone: string;
+  } | null>(null);
+
+  // Filter Kepala Keluarga in the selected location
+  const headsOfFamily = useMemo(() => {
+    return jamaahList.filter(j => 
+      (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') &&
+      j.location === selectedLocation
+    );
+  }, [jamaahList, selectedLocation]);
+
+  const filteredKKList = useMemo(() => {
+    if (!kkSearchTerm.trim()) return headsOfFamily;
+    const term = kkSearchTerm.toLowerCase();
+    return headsOfFamily.filter(k => 
+      (k.name && k.name.toLowerCase().includes(term)) ||
+      (k.nickname && k.nickname.toLowerCase().includes(term)) ||
+      (k.memberId && k.memberId.toLowerCase().includes(term)) ||
+      (k.phone && k.phone.includes(term))
+    );
+  }, [headsOfFamily, kkSearchTerm]);
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        showToast('Ukuran foto maksimal 2MB', 'error');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setBase64Photo(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    if (isExpired) {
+      showToast('Tautan pendaftaran ini sudah kedaluwarsa.', 'error');
+      return;
+    }
+
+    const formData = new FormData(e.currentTarget);
+    const nameVal = (formData.get('name') as string || '').trim();
+    if (!nameVal) {
+      setActiveStep('identitas');
+      showToast('Nama lengkap wajib diisi.', 'error');
+      return;
+    }
+
+    const phoneVal = (formData.get('phone') as string || '').trim();
+    if (!phoneVal) {
+      setActiveStep('identitas');
+      showToast('Nomor telepon / WA wajib diisi.', 'error');
+      return;
+    }
+
+    if (!isKK && !selectedKKId) {
+      setActiveStep('keluarga');
+      showToast('Silakan pilih Kepala Keluarga terlebih dahulu.', 'error');
+      return;
+    }
+
+    // Automatic Member ID Calculation
+    const prefix = LOCATION_PREFIXES[selectedLocation] || 'JM';
+    let memberId = '';
+    let familyOrder = 0;
+    let finalKKId = '';
+
+    if (isKK) {
+      const kkInLocation = jamaahList.filter(j => 
+        j.location === selectedLocation && 
+        (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE')
+      );
+      let maxNum = 0;
+      kkInLocation.forEach(kk => {
+        const numPart = (kk.memberId || '').replace(prefix, '');
+        const num = parseInt(numPart);
+        if (!isNaN(num) && num > maxNum) maxNum = num;
+      });
+      const nextNum = maxNum + 1;
+      memberId = `${prefix}${nextNum.toString().padStart(3, '0')}`;
+      familyOrder = 0;
+      finalKKId = memberId;
+    } else {
+      const kk = jamaahList.find(j => j.memberId === selectedKKId);
+      const familyMembers = jamaahList.filter(j => j.kkId === selectedKKId);
+      let maxOrder = 0;
+      familyMembers.forEach(m => {
+        if (m.familyOrder > maxOrder) maxOrder = m.familyOrder;
+      });
+      familyOrder = maxOrder + 1;
+      memberId = `${selectedKKId}-${familyOrder.toString().padStart(2, '0')}`;
+      finalKKId = selectedKKId;
+    }
+
+    const originAddress = (formData.get('originAddress') as string) || '';
+    const currentAddress = (formData.get('currentAddress') as string) || '';
+
+    const newJamaahData: Jamaah = {
+      id: Math.random().toString(36).substring(2, 11),
+      memberId,
+      name: nameVal,
+      nickname: (formData.get('nickname') as string) || '',
+      gender: (formData.get('gender') as string) || 'Laki-laki',
+      bloodType: (formData.get('bloodType') as string) || '',
+      originAddress,
+      currentAddress,
+      address: currentAddress || originAddress,
+      phone: phoneVal,
+      location: selectedLocation,
+      category: (formData.get('category') as JamaahCategory) || 'UMUM',
+      isKK,
+      kkId: finalKKId,
+      familyOrder,
+      dapukan: [],
+      positions: [],
+      photoUrl: base64Photo || undefined,
+      registeredAt: Date.now(),
+      placeOfBirth: (formData.get('placeOfBirth') as string) || '',
+      dateOfBirth: (formData.get('dateOfBirth') as string) || '',
+      fatherName: (formData.get('fatherName') as string) || '',
+      motherName: (formData.get('motherName') as string) || '',
+      parentPhone: (formData.get('parentPhone') as string) || '',
+      lastEducation: (formData.get('lastEducation') as string) || '',
+      majorOrClass: (formData.get('majorOrClass') as string) || '',
+      schoolOrUniversity: (formData.get('schoolOrUniversity') as string) || '',
+      currentJob: (formData.get('currentJob') as string) || '',
+      workplaceAddress: (formData.get('workplaceAddress') as string) || '',
+      maritalStatus: (formData.get('maritalStatus') as string) || 'Belum Menikah',
+      marriageYear: (formData.get('marriageYear') as string) || '',
+      spouseName: (formData.get('spouseName') as string) || '',
+      hasJurusKeras: (formData.get('hasJurusKeras') as string) || 'Belum',
+      hasJurusHalus: (formData.get('hasJurusHalus') as string) || 'Belum',
+      hasUbShares: (formData.get('hasUbShares') as string) || 'Tidak',
+      isMubaligh: (formData.get('isMubaligh') as string) || 'Bukan',
+      hasHajj: (formData.get('hasHajj') as string) || 'Belum',
+      hajjPortionNumber: (formData.get('hajjPortionNumber') as string) || '',
+      plannedHajjYear: (formData.get('plannedHajjYear') as string) || '',
+      hajjName: (formData.get('hajjName') as string) || '',
+      hajjYear: (formData.get('hajjYear') as string) || '',
+      medicalHistory: (formData.get('medicalHistory') as string) || ''
+    };
+
+    setIsSaving(true);
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'jamaah', newJamaahData, newJamaahData.id);
+      showToast(`Alhamdulillah! Data jamaah ${nameVal} berhasil didaftarkan.`, 'success');
+      setRegisteredResult({
+        memberId,
+        name: nameVal,
+        location: selectedLocation,
+        isKK,
+        phone: phoneVal
+      });
+    } catch (err: any) {
+      showToast(`Gagal menyimpan data: ${err.message || 'Silakan periksa koneksi internet Anda.'}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleResetForAnotherFamilyMember = () => {
+    // Keep location and set isKK to false with the newly created KK or current KK
+    const previousKK = registeredResult?.isKK ? registeredResult.memberId : selectedKKId;
+    if (previousKK) {
+      setIsKK(false);
+      setSelectedKKId(previousKK);
+      const kkItem = jamaahList.find(j => j.memberId === previousKK);
+      if (kkItem) {
+        setKkSearchTerm(`${kkItem.memberId} - ${kkItem.name}`);
+      }
+    }
+    setRegisteredResult(null);
+    setBase64Photo(null);
+    setActiveStep('identitas');
+  };
+
+  // 1. EXPIRED LINK SCREEN
+  if (isExpired) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-white rounded-[2.5rem] p-8 md:p-12 shadow-2xl max-w-lg w-full text-center border border-slate-100 relative overflow-hidden"
+        >
+          <div className="w-20 h-20 bg-amber-50 text-amber-500 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-inner">
+            <Clock className="w-10 h-10" />
+          </div>
+          <span className="px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-amber-100 text-amber-800 inline-block mb-3">
+            Tautan Kedaluwarsa
+          </span>
+          <h2 className="text-2xl md:text-3xl font-black text-slate-900 mb-3 tracking-tight">
+            Masa Berlaku Telah Berakhir
+          </h2>
+          <p className="text-slate-600 text-sm leading-relaxed mb-6">
+            Mohon maaf, tautan pengisian formulir pendaftaran jamaah mandiri ini telah melewati batas waktu kedaluwarsa pada:
+          </p>
+
+          <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 mb-8 text-left space-y-2">
+            <div className="flex justify-between items-center text-xs">
+              <span className="text-slate-400 font-medium">Batas Waktu:</span>
+              <span className="font-bold text-slate-800">
+                {tokenData?.expiresAt ? new Date(tokenData.expiresAt).toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' }) : '-'} WIB
+              </span>
+            </div>
+            {tokenData?.location && (
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-medium">Lokasi Kelompok:</span>
+                <span className="font-bold text-emerald-700">{tokenData.location}</span>
+              </div>
+            )}
+            {tokenData?.note && (
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-slate-400 font-medium">Keterangan:</span>
+                <span className="font-bold text-slate-700">{tokenData.note}</span>
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-slate-500 mb-8 leading-relaxed">
+            Silakan hubungi pengurus kelompok atau admin masjid untuk meminta tautan pendaftaran mandiri yang baru.
+          </p>
+
+          <button
+            type="button"
+            onClick={onBack}
+            className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-sm uppercase tracking-wider hover:bg-slate-800 transition-all shadow-xl shadow-slate-200 active:scale-95"
+          >
+            Kembali ke Halaman Utama
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // 2. SUCCESS CONFIRMATION SCREEN
+  if (registeredResult) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-emerald-900 via-slate-900 to-slate-950 flex items-center justify-center p-4">
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.92, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          className="bg-white rounded-[2.5rem] p-8 md:p-12 shadow-2xl max-w-lg w-full text-center border border-white/20 relative overflow-hidden"
+        >
+          <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-sm">
+            <CheckCircle2 className="w-10 h-10" />
+          </div>
+
+          <span className="px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 inline-block mb-3">
+            Pendaftaran Berhasil 🎉
+          </span>
+
+          <h2 className="text-2xl md:text-3xl font-black text-slate-900 mb-2 tracking-tight">
+            Alhamdulillah, Data Tersimpan!
+          </h2>
+          <p className="text-slate-600 text-sm leading-relaxed mb-6">
+            Data diri Anda telah sukses tersimpan di database jamaah Desa Gandaria.
+          </p>
+
+          {/* Member Badge Card */}
+          <div className="bg-gradient-to-br from-emerald-500 to-teal-700 text-white rounded-3xl p-6 mb-8 text-left shadow-xl shadow-emerald-900/20 relative overflow-hidden">
+            <div className="absolute right-[-20px] bottom-[-20px] opacity-10 pointer-events-none">
+              <Users className="w-44 h-44" />
+            </div>
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <p className="text-[10px] uppercase font-black tracking-widest text-emerald-200">ID Anggota / Nomor Induk</p>
+                <p className="text-2xl font-black tracking-tight">{registeredResult.memberId}</p>
+              </div>
+              <span className="px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-[10px] font-bold uppercase">
+                {registeredResult.isKK ? 'Kepala Keluarga' : 'Anggota Keluarga'}
+              </span>
+            </div>
+
+            <div className="space-y-1.5 pt-3 border-t border-white/20 text-xs">
+              <div className="flex justify-between">
+                <span className="text-emerald-100">Nama Lengkap:</span>
+                <span className="font-black text-white">{registeredResult.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-emerald-100">Kelompok:</span>
+                <span className="font-bold text-white">{registeredResult.location}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-emerald-100">No. WhatsApp:</span>
+                <span className="font-medium text-white">{registeredResult.phone}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={handleResetForAnotherFamilyMember}
+              className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm uppercase tracking-wider hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 active:scale-95 flex items-center justify-center gap-2"
+            >
+              <UserPlus className="w-5 h-5" />
+              <span>Daftarkan Anggota Keluarga Lain</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onBack}
+              className="w-full py-3.5 bg-slate-100 text-slate-700 rounded-2xl font-bold text-sm hover:bg-slate-200 transition-all"
+            >
+              Selesai & Keluar
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // 3. REGISTRATION FORM
+  const isLocationLocked = Boolean(tokenData?.location && tokenData.location !== 'Seluruh Lokasi');
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 py-8 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-3xl mx-auto">
+        {/* Top Header Card */}
+        <div className="bg-slate-800/90 border border-slate-700/80 backdrop-blur-xl rounded-[2.5rem] p-6 sm:p-8 mb-8 shadow-2xl">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-700/60 pb-6 mb-6">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shadow-inner">
+                <Users className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">Pendaftaran Mandiri Jamaah</span>
+                <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">Formulir Data Jamaah</h1>
+                <p className="text-xs text-slate-400">Desa Gandaria • Tanpa Perlu Login</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onBack}
+              className="self-start sm:self-auto px-4 py-2 bg-slate-700/60 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Kembali</span>
+            </button>
+          </div>
+
+          {/* Expiration & Location Notification Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {tokenData?.expiresAt && (
+              <div className="p-3.5 bg-emerald-950/50 border border-emerald-500/30 rounded-2xl flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+                  <Timer className="w-4 h-4 animate-pulse" />
+                </div>
+                <div className="overflow-hidden">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-emerald-400">Masa Aktif Tautan</p>
+                  <p className="text-xs font-bold text-white truncate">{remainingTimeString}</p>
+                </div>
+              </div>
+            )}
+
+            <div className="p-3.5 bg-slate-700/40 border border-slate-600/50 rounded-2xl flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-blue-500/20 text-blue-400 flex items-center justify-center flex-shrink-0">
+                <MapPin className="w-4 h-4" />
+              </div>
+              <div className="overflow-hidden">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Lokasi Kelompok</p>
+                <p className="text-xs font-bold text-white truncate">
+                  {selectedLocation} {isLocationLocked ? '(Terkunci dari Tautan)' : ''}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Form Box */}
+        <div className="bg-white text-slate-900 rounded-[2.5rem] p-6 sm:p-10 shadow-2xl border border-slate-100">
+          {/* Step Tabs Navigation */}
+          <div className="flex border-b border-slate-100 mb-8 overflow-x-auto gap-2 sm:gap-4 pb-2">
+            {[
+              { id: 'identitas', label: '1. Identitas Diri', icon: Users },
+              { id: 'keluarga', label: '2. Keluarga & Domisili', icon: Home },
+              { id: 'keilmuan', label: '3. Keilmuan & Ibadah', icon: HeartPulse }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveStep(tab.id as any)}
+                className={cn(
+                  "px-4 py-3 rounded-2xl font-bold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap transition-all",
+                  activeStep === tab.id
+                    ? "bg-emerald-600 text-white shadow-lg shadow-emerald-200"
+                    : "text-slate-500 hover:bg-slate-100"
+                )}
+              >
+                <tab.icon className="w-4 h-4" />
+                <span>{tab.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {/* STEP 1: IDENTITAS DIRI */}
+            {activeStep === 'identitas' && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
+                <div className="p-4 bg-emerald-50/60 rounded-2xl border border-emerald-100/80 mb-4">
+                  <h3 className="font-black text-emerald-900 text-sm mb-0.5">Data Pribadi Jamaah</h3>
+                  <p className="text-xs text-emerald-700 font-medium">Mohon isi identitas diri sesuai data KTP / Kartu Keluarga</p>
+                </div>
+
+                {/* Upload Foto Profil */}
+                <div className="flex items-center gap-5 p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
+                  <div className="w-20 h-20 rounded-2xl bg-white border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden relative shadow-sm">
+                    {base64Photo ? (
+                      <img src={base64Photo} alt="Foto Profil" className="w-full h-full object-cover" />
+                    ) : (
+                      <Users className="w-8 h-8 text-slate-300" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Pas Foto (Opsional)</label>
+                    <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all cursor-pointer shadow-sm">
+                      <ImageIcon className="w-4 h-4" />
+                      <span>{base64Photo ? 'Ganti Foto' : 'Pilih Foto'}</span>
+                      <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
+                    </label>
+                    {base64Photo && (
+                      <button
+                        type="button"
+                        onClick={() => setBase64Photo(null)}
+                        className="ml-2 text-xs text-red-500 font-semibold hover:underline"
+                      >
+                        Hapus
+                      </button>
+                    )}
+                    <p className="text-[11px] text-slate-400 mt-1">Format JPG, PNG maksimal 2MB</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Nama Lengkap <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      name="name"
+                      required
+                      placeholder="Contoh: Muhammad Fulan"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Panggilan / Akrab</label>
+                    <input
+                      name="nickname"
+                      placeholder="Contoh: Fulan"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
+                      No. Telepon / WhatsApp <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      name="phone"
+                      type="tel"
+                      required
+                      placeholder="Contoh: 081234567890"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Jenis Kelamin</label>
+                    <select
+                      name="gender"
+                      defaultValue="Laki-laki"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="Laki-laki">Laki-laki</option>
+                      <option value="Perempuan">Perempuan</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Golongan Darah</label>
+                    <select
+                      name="bloodType"
+                      defaultValue="Belum Tahu"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="Belum Tahu">Belum Tahu</option>
+                      <option value="A">A</option>
+                      <option value="B">B</option>
+                      <option value="AB">AB</option>
+                      <option value="O">O</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Tempat Lahir</label>
+                    <input
+                      name="placeOfBirth"
+                      placeholder="Kota Tempat Lahir"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Tanggal Lahir</label>
+                    <input
+                      name="dateOfBirth"
+                      type="date"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Pekerjaan / Profesi</label>
+                    <input
+                      name="currentJob"
+                      placeholder="Contoh: Karyawan Swasta, Wiraswasta, Pelajar"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Pendidikan Terakhir</label>
+                    <select
+                      name="lastEducation"
+                      defaultValue="SMA/SMK"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="SD">SD / Sederajat</option>
+                      <option value="SMP">SMP / MTs</option>
+                      <option value="SMA/SMK">SMA / SMK / MA</option>
+                      <option value="D3">Diploma (D3)</option>
+                      <option value="S1">Sarjana (S1)</option>
+                      <option value="S2">Magister (S2)</option>
+                      <option value="S3">Doktor (S3)</option>
+                      <option value="Lainnya">Lainnya</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setActiveStep('keluarga')}
+                    className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all flex items-center gap-2"
+                  >
+                    <span>Lanjut ke Data Keluarga</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* STEP 2: KELUARGA & DOMISILI */}
+            {activeStep === 'keluarga' && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
+                <div className="p-4 bg-blue-50/60 rounded-2xl border border-blue-100/80 mb-4">
+                  <h3 className="font-black text-blue-900 text-sm mb-0.5">Struktur Keluarga & Tempat Tinggal</h3>
+                  <p className="text-xs text-blue-700 font-medium">Tentukan status Kepala Keluarga dan kelompok jamaah Anda</p>
+                </div>
+
+                {/* Lokasi Kelompok Masjid */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Kelompok Masjid</label>
+                  <select
+                    name="location"
+                    value={selectedLocation}
+                    onChange={(e) => {
+                      setSelectedLocation(e.target.value as MosqueLocation);
+                      setSelectedKKId('');
+                      setKkSearchTerm('');
+                    }}
+                    disabled={isLocationLocked}
+                    className={cn(
+                      "w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white",
+                      isLocationLocked && "bg-slate-100 cursor-not-allowed opacity-80"
+                    )}
+                  >
+                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
+                      <option key={l} value={l}>{l}</option>
+                    ))}
+                  </select>
+                  {isLocationLocked && (
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Lokasi kelompok telah ditentukan dari tautan pendaftaran.
+                    </p>
+                  )}
+                </div>
+
+                {/* Status KK Selection */}
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-3">
+                  <label className="block text-xs font-bold text-slate-800">Apakah Anda Kepala Keluarga (KK)?</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsKK(true);
+                        setSelectedKKId('');
+                        setKkSearchTerm('');
+                      }}
+                      className={cn(
+                        "p-4 rounded-xl border text-left transition-all",
+                        isKK
+                          ? "bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500"
+                          : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"
+                      )}
+                    >
+                      <p className="font-black text-sm">👨‍👩‍👧‍👦 Ya, Kepala Keluarga</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Akan dibuatkan nomor induk KK baru</p>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsKK(false)}
+                      className={cn(
+                        "p-4 rounded-xl border text-left transition-all",
+                        !isKK
+                          ? "bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500"
+                          : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"
+                      )}
+                    >
+                      <p className="font-black text-sm">👤 Bukan (Anggota Keluarga)</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Istri, Anak, atau Famili dari KK yang ada</p>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Searchable KK Selector if NOT KK */}
+                {!isKK && (
+                  <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-2">
+                    <label className="block text-xs font-bold text-amber-900">
+                      Pilih Kepala Keluarga Anda ({selectedLocation}) <span className="text-red-500">*</span>
+                    </label>
+
+                    <div className="relative">
+                      <div className="relative">
+                        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                          type="text"
+                          value={kkSearchTerm}
+                          onChange={(e) => {
+                            setKkSearchTerm(e.target.value);
+                            setIsKkDropdownOpen(true);
+                          }}
+                          onFocus={() => setIsKkDropdownOpen(true)}
+                          placeholder="Cari Kepala Keluarga (Ketik Nama / ID KK / HP)..."
+                          className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                        />
+                      </div>
+
+                      {/* Dropdown Results */}
+                      {isKkDropdownOpen && (
+                        <div className="absolute z-20 top-full left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl divide-y divide-slate-100">
+                          {filteredKKList.length === 0 ? (
+                            <div className="p-3 text-center text-xs text-slate-400">
+                              {headsOfFamily.length === 0 
+                                ? `Belum ada Kepala Keluarga di kelompok ${selectedLocation}` 
+                                : 'Tidak ada Kepala Keluarga yang cocok dengan pencarian'}
+                            </div>
+                          ) : (
+                            filteredKKList.map(k => (
+                              <button
+                                key={k.id || k.memberId}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedKKId(k.memberId);
+                                  setKkSearchTerm(`${k.memberId} - ${k.name} ${k.nickname ? `(${k.nickname})` : ''}`);
+                                  setIsKkDropdownOpen(false);
+                                }}
+                                className={cn(
+                                  "w-full px-3.5 py-2.5 text-left text-xs hover:bg-emerald-50 flex items-center justify-between transition-colors",
+                                  selectedKKId === k.memberId && "bg-emerald-50 text-emerald-800 font-bold"
+                                )}
+                              >
+                                <div>
+                                  <span className="font-bold text-slate-900">{k.name}</span>
+                                  {k.nickname && <span className="text-slate-500 ml-1">({k.nickname})</span>}
+                                  <p className="text-[10px] text-slate-400">{k.phone || 'Tanpa No. HP'}</p>
+                                </div>
+                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono text-[10px] font-bold">
+                                  {k.memberId}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedKKId ? (
+                      <p className="text-xs text-emerald-700 font-bold flex items-center gap-1.5 pt-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        Terhubung dengan KK: <span className="font-mono">{selectedKKId}</span>
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-amber-700">
+                        * Wajib memilih salah satu Kepala Keluarga yang terdaftar.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Status Pernikahan */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
+                    <select
+                      name="maritalStatus"
+                      defaultValue="Belum Menikah"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="Belum Menikah">Belum Menikah</option>
+                      <option value="Menikah">Menikah</option>
+                      <option value="Duda">Duda</option>
+                      <option value="Janda">Janda</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Suami / Istri (Jika Menikah)</label>
+                    <input
+                      name="spouseName"
+                      placeholder="Nama Pasangan"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Domisili Saat Ini</label>
+                    <textarea
+                      name="currentAddress"
+                      placeholder="Jalan, RT/RW, Kelurahan, Kecamatan, Kota"
+                      rows={2}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Asal / KTP</label>
+                    <textarea
+                      name="originAddress"
+                      placeholder="Alamat asal daerah / sesuai KTP (jika berbeda dengan domisili)"
+                      rows={2}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ayah</label>
+                    <input
+                      name="fatherName"
+                      placeholder="Nama Ayah Kandung"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ibu</label>
+                    <input
+                      name="motherName"
+                      placeholder="Nama Ibu Kandung"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-between pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setActiveStep('identitas')}
+                    className="px-6 py-3 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all flex items-center gap-2"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Kembali</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveStep('keilmuan')}
+                    className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all flex items-center gap-2"
+                  >
+                    <span>Lanjut ke Keilmuan & Ibadah</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
+            {/* STEP 3: KEILMUAN & IBADAH */}
+            {activeStep === 'keilmuan' && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
+                <div className="p-4 bg-purple-50/60 rounded-2xl border border-purple-100/80 mb-4">
+                  <h3 className="font-black text-purple-900 text-sm mb-0.5">Keilmuan, Haji & Catatan Kesehatan</h3>
+                  <p className="text-xs text-purple-700 font-medium">Informasi pembinaan keagamaan dan riwayat haji</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
+                    <select
+                      name="category"
+                      defaultValue="UMUM"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="UMUM">UMUM (Dewasa / Orang Tua)</option>
+                      <option value="GPN">GPN (Generus Muda)</option>
+                      <option value="APR">APR (Pra-Remaja / SMP)</option>
+                      <option value="ACR">ACR (Cabe Rawit / SD)</option>
+                      <option value="DUDA">DUDA</option>
+                      <option value="JANDA">JANDA</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Status Mubaligh / Mubalighot</label>
+                    <select
+                      name="isMubaligh"
+                      defaultValue="Bukan"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="Bukan">Bukan</option>
+                      <option value="Mubaligh Kelompok">Mubaligh Kelompok</option>
+                      <option value="Mubaligh Desa">Mubaligh Desa</option>
+                      <option value="Mubaligh Daerah">Mubaligh Daerah</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Status Riwayat Haji / Umroh</label>
+                    <select
+                      name="hasHajj"
+                      defaultValue="Belum"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="Belum">Belum Pernah</option>
+                      <option value="Sudah">Sudah Pernah Haji</option>
+                      <option value="Pernah Umroh">Pernah Umroh</option>
+                      <option value="Sudah Daftar Porsi">Sudah Daftar Porsi Haji</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Punya Saham UB</label>
+                    <select
+                      name="hasUbShares"
+                      defaultValue="Tidak"
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
+                    >
+                      <option value="Tidak">Tidak</option>
+                      <option value="Ada">Ada</option>
+                    </select>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Riwayat Penyakit / Catatan Medis (Opsional)</label>
+                    <textarea
+                      name="medicalHistory"
+                      placeholder="Informasi penyakit bawaan, alergi, atau catatan medis jika ada..."
+                      rows={2}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
+                    />
+                  </div>
+                </div>
+
+                {/* Final Submission Buttons */}
+                <div className="flex flex-col sm:flex-row gap-3 pt-6 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setActiveStep('keluarga')}
+                    disabled={isSaving}
+                    className="px-6 py-3.5 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all disabled:opacity-50"
+                  >
+                    Kembali
+                  </button>
+
+                  <button
+                    type="submit"
+                    disabled={isSaving}
+                    className="flex-1 py-3.5 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-98"
+                  >
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <span>Menyimpan Data Jamaah...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-5 h-5" />
+                        <span>Kirim & Simpan Data Jamaah</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- Modal Generator Link Pendaftaran Mandiri (Admin / Pengurus) ---
+function RegistrationLinkModal({
+  isOpen,
+  onClose,
+  profile
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  profile: UserProfile;
+}) {
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
+  const [activeTab, setActiveTab] = useState<'create' | 'history'>('create');
+  
+  const [targetLocation, setTargetLocation] = useState<MosqueLocation | 'Seluruh Lokasi'>(() => {
+    return profile.location || 'Kramat Batu';
+  });
+
+  const [durationOption, setDurationOption] = useState<'6h' | '12h' | '24h' | '3d' | '7d' | '14d' | '30d' | 'custom'>('24h');
+  const [customDateTime, setCustomDateTime] = useState(() => {
+    const d = new Date(Date.now() + 24 * 3600 * 1000);
+    return d.toISOString().slice(0, 16);
+  });
+  const [note, setNote] = useState('');
+  
+  const [generatedLink, setGeneratedLink] = useState<string | null>(null);
+  const [generatedPayload, setGeneratedPayload] = useState<any | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Saved Links History (from localStorage and query)
+  const [historyLinks, setHistoryLinks] = useState<RegistrationLink[]>(() => {
+    try {
+      const saved = localStorage.getItem('app_registration_links');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const calculateExpiresAt = useCallback((): number => {
+    const now = Date.now();
+    switch (durationOption) {
+      case '6h': return now + 6 * 3600 * 1000;
+      case '12h': return now + 12 * 3600 * 1000;
+      case '24h': return now + 24 * 3600 * 1000;
+      case '3d': return now + 3 * 86400 * 1000;
+      case '7d': return now + 7 * 86400 * 1000;
+      case '14d': return now + 14 * 86400 * 1000;
+      case '30d': return now + 30 * 86400 * 1000;
+      case 'custom': {
+        const parsed = new Date(customDateTime).getTime();
+        return isNaN(parsed) ? now + 24 * 3600 * 1000 : parsed;
+      }
+      default: return now + 24 * 3600 * 1000;
+    }
+  }, [durationOption, customDateTime]);
+
+  const handleGenerate = () => {
+    const expiresAt = calculateExpiresAt();
+    const id = `reg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const payload = {
+      id,
+      location: targetLocation,
+      expiresAt,
+      createdAt: Date.now(),
+      createdBy: profile.displayName || profile.role,
+      note: note.trim()
+    };
+
+    const token = btoa(encodeURIComponent(JSON.stringify(payload)));
+    const baseUrl = `${window.location.origin}${window.location.pathname}`;
+    const fullUrl = `${baseUrl}?register_jamaah=true&token=${token}`;
+
+    setGeneratedLink(fullUrl);
+    setGeneratedPayload(payload);
+
+    // Save to history
+    const newRecord: RegistrationLink = {
+      id,
+      token,
+      location: targetLocation,
+      expiresAt,
+      createdAt: Date.now(),
+      createdBy: profile.displayName || profile.role,
+      note: note.trim(),
+      isActive: true
+    };
+
+    const updated = [newRecord, ...historyLinks.filter(l => l.id !== id)];
+    setHistoryLinks(updated);
+    try {
+      localStorage.setItem('app_registration_links', JSON.stringify(updated));
+    } catch (e) {}
+
+    // Save asynchronously to spreadsheet registration_links
+    saveData(null, accessToken, spreadsheetId, 'registration_links', newRecord, id).catch(() => {});
+    showToast('Tautan pendaftaran berhasil dibuat!', 'success');
+  };
+
+  const handleCopy = (urlToCopy?: string) => {
+    const url = urlToCopy || generatedLink;
+    if (!url) return;
+    navigator.clipboard.writeText(url);
+    setCopied(true);
+    showToast('Tautan pendaftaran berhasil disalin ke clipboard!', 'success');
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleShareWhatsApp = (url?: string, loc?: string, expTime?: number) => {
+    const targetUrl = url || generatedLink;
+    const targetLoc = loc || targetLocation;
+    const targetExp = expTime || (generatedPayload ? generatedPayload.expiresAt : calculateExpiresAt());
+    if (!targetUrl) return;
+
+    const formattedExp = new Date(targetExp).toLocaleString('id-ID', {
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    const msg = `Assalamu'alaikum Wr. Wb. Bapak/Ibu/Saudara Jamaah sekalian,\n\nMohon bantuannya untuk mengisi formulir pendaftaran/pemutakhiran data jamaah ${targetLoc !== 'Seluruh Lokasi' ? `Kelompok ${targetLoc}` : 'Desa Gandaria'} melalui tautan resmi berikut:\n\n👉 ${targetUrl}\n\n⚠️ *Perhatian:* Tautan ini aktif sampai dengan *${formattedExp} WIB*.\nMohon segera mengisi sebelum batas waktu berakhir.\n\nAlhamdulillah Jazakumullohu Khoiro.`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+  };
+
+  const handleDownloadQR = () => {
+    const canvas = document.getElementById('reg-link-qr-canvas') as HTMLCanvasElement;
+    if (!canvas) return;
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `QR_Pendaftaran_Jamaah_${String(targetLocation).replace(/\s+/g, '_')}.png`;
+    a.click();
+  };
+
+  const handlePrintPoster = () => {
+    const canvas = document.getElementById('reg-link-qr-canvas') as HTMLCanvasElement;
+    if (!canvas) return;
+    const qrDataUrl = canvas.toDataURL('image/png');
+    const expText = generatedPayload?.expiresAt 
+      ? new Date(generatedPayload.expiresAt).toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' })
+      : '';
+
+    const printWin = window.open('', '_blank');
+    if (!printWin) {
+      showToast('Popup cetak diblokir oleh browser. Izinkan popup.', 'error');
+      return;
+    }
+
+    printWin.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Poster Pendaftaran Jamaah - ${targetLocation}</title>
+          <style>
+            @page { size: A4 portrait; margin: 15mm; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              color: #0f172a;
+              text-align: center;
+              padding: 20px;
+              margin: 0;
+            }
+            .card {
+              border: 3px solid #10b981;
+              border-radius: 24px;
+              padding: 30px;
+              max-width: 600px;
+              margin: 0 auto;
+            }
+            h1 { font-size: 26px; margin: 0 0 8px; color: #047857; text-transform: uppercase; }
+            h2 { font-size: 18px; margin: 0 0 16px; color: #334155; }
+            .location-badge {
+              display: inline-block;
+              background-color: #ecfdf5;
+              color: #065f46;
+              padding: 8px 18px;
+              border-radius: 9999px;
+              font-weight: bold;
+              font-size: 16px;
+              margin-bottom: 24px;
+              border: 1px solid #a7f3d0;
+            }
+            .qr-wrapper {
+              background: #fff;
+              padding: 16px;
+              border-radius: 16px;
+              display: inline-block;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+              border: 1px solid #e2e8f0;
+              margin-bottom: 20px;
+            }
+            .qr-img { width: 280px; height: 280px; display: block; }
+            .instructions { font-size: 15px; color: #475569; line-height: 1.5; margin: 16px 0; }
+            .expiry-box {
+              background: #fffbeb;
+              border: 1px solid #fef3c7;
+              color: #92400e;
+              padding: 10px 16px;
+              border-radius: 12px;
+              font-size: 13px;
+              font-weight: bold;
+              margin-top: 16px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>Formulir Pendaftaran Jamaah Mandiri</h1>
+            <h2>Sistem Informasi & Manajemen Desa Gandaria</h2>
+            <div class="location-badge">Kelompok: ${targetLocation}</div>
+            <div class="qr-wrapper">
+              <img class="qr-img" src="${qrDataUrl}" alt="QR Code" />
+            </div>
+            <p class="instructions">
+              <strong>Scan QR Code di atas menggunakan Kamera HP / WhatsApp</strong><br/>
+              untuk mengisi data jamaah secara mandiri tanpa perlu login.
+            </p>
+            ${expText ? `<div class="expiry-box">⏳ Berlaku hingga: ${expText} WIB</div>` : ''}
+          </div>
+          <script>
+            window.onload = function() { window.print(); };
+          </script>
+        </body>
+      </html>
+    `);
+    printWin.document.close();
+  };
+
+  const handleDeleteHistory = (id: string) => {
+    const updated = historyLinks.filter(l => l.id !== id);
+    setHistoryLinks(updated);
+    try {
+      localStorage.setItem('app_registration_links', JSON.stringify(updated));
+    } catch (e) {}
+    deleteData(null, accessToken, spreadsheetId, 'registration_links', id).catch(() => {});
+    showToast('Tautan berhasil dihapus dari riwayat.', 'info');
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div 
+        initial={{ opacity: 0 }} 
+        animate={{ opacity: 1 }} 
+        exit={{ opacity: 0 }} 
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto"
+      >
+        <motion.div 
+          initial={{ scale: 0.95, y: 20 }} 
+          animate={{ scale: 1, y: 0 }} 
+          exit={{ scale: 0.95, y: 20 }} 
+          className="bg-white rounded-[2.5rem] p-6 sm:p-8 w-full max-w-2xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden"
+        >
+          {/* Header */}
+          <div className="flex justify-between items-start mb-6 border-b border-slate-100 pb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-inner">
+                <Share2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-xl font-black text-slate-900">Buat Tautan Pendaftaran Jamaah</h3>
+                <p className="text-xs text-slate-500">Generate link pengisian mandiri dengan batas waktu (expired date)</p>
+              </div>
+            </div>
+            <button 
+              type="button" 
+              onClick={onClose} 
+              className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Sub Navigation */}
+          <div className="flex gap-2 mb-6 border-b border-slate-100 pb-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab('create')}
+              className={cn(
+                "px-4 py-2 rounded-xl text-xs font-bold transition-all",
+                activeTab === 'create'
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-500 hover:bg-slate-100"
+              )}
+            >
+              Buat Tautan Baru
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('history')}
+              className={cn(
+                "px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5",
+                activeTab === 'history'
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-500 hover:bg-slate-100"
+              )}
+            >
+              <span>Riwayat Tautan</span>
+              {historyLinks.length > 0 && (
+                <span className="px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-black">
+                  {historyLinks.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Body content */}
+          <div className="flex-1 overflow-y-auto pr-1 space-y-6">
+            {activeTab === 'create' ? (
+              <>
+                {/* Form Controls */}
+                <div className="space-y-4">
+                  {/* Location Selector */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">Lokasi Target Jamaah</label>
+                    <select
+                      value={targetLocation}
+                      onChange={(e) => {
+                        setTargetLocation(e.target.value as any);
+                        setGeneratedLink(null);
+                      }}
+                      disabled={profile.role === 'pengurus' && Boolean(profile.location)}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
+                    >
+                      {profile.role === 'admin' && <option value="Seluruh Lokasi">Seluruh Lokasi (Jamaah Bebas Memilih)</option>}
+                      {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => (
+                        <option key={loc} value={loc}>{loc}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Expiry Presets */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1.5">Masa Berlaku Tautan (Expired Date)</label>
+                    <div className="grid grid-cols-4 sm:grid-cols-7 gap-2 mb-3">
+                      {[
+                        { id: '6h', label: '6 Jam' },
+                        { id: '12h', label: '12 Jam' },
+                        { id: '24h', label: '1 Hari' },
+                        { id: '3d', label: '3 Hari' },
+                        { id: '7d', label: '7 Hari' },
+                        { id: '30d', label: '30 Hari' },
+                        { id: 'custom', label: 'Kustom' }
+                      ].map(preset => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            setDurationOption(preset.id as any);
+                            setGeneratedLink(null);
+                          }}
+                          className={cn(
+                            "py-2 px-1 text-center rounded-xl text-xs font-bold transition-all border",
+                            durationOption === preset.id
+                              ? "bg-emerald-50 border-emerald-500 text-emerald-800 ring-1 ring-emerald-500"
+                              : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                          )}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {durationOption === 'custom' && (
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1 mb-2">
+                        <label className="block text-[11px] font-bold text-slate-600">Pilih Tanggal & Jam Kedaluwarsa:</label>
+                        <input
+                          type="datetime-local"
+                          value={customDateTime}
+                          onChange={(e) => {
+                            setCustomDateTime(e.target.value);
+                            setGeneratedLink(null);
+                          }}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                        />
+                      </div>
+                    )}
+
+                    {/* Expiry Preview Banner */}
+                    <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-100 text-xs text-emerald-800 flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                      <span>
+                        Tautan akan aktif sampai: <strong>{new Date(calculateExpiresAt()).toLocaleString('id-ID', { dateStyle: 'full', timeStyle: 'short' })} WIB</strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Note / Keperluan */}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Catatan / Keperluan (Opsional)</label>
+                    <input
+                      type="text"
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder="Contoh: Pendataan Santri Baru, Sensus Ramadan 2026..."
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
+
+                  {/* Generate Button */}
+                  <button
+                    type="button"
+                    onClick={handleGenerate}
+                    className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-xs uppercase tracking-wider hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 flex items-center justify-center gap-2 active:scale-98"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>{generatedLink ? 'Perbarui Tautan & QR Code' : 'Generate Link & QR Code'}</span>
+                  </button>
+                </div>
+
+                {/* Generated Link Result Section */}
+                {generatedLink && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="p-5 bg-gradient-to-br from-slate-900 to-slate-950 text-white rounded-3xl space-y-4 shadow-xl border border-slate-800"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5">
+                        <CheckCheck className="w-3.5 h-3.5" /> Tautan Pendaftaran Siap Dibagikan
+                      </span>
+                      <span className="text-[11px] text-slate-400 font-mono">
+                        Kelompok: {targetLocation}
+                      </span>
+                    </div>
+
+                    {/* URL Box & Copy */}
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={generatedLink}
+                        className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 text-slate-200 text-xs font-mono outline-none select-all"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleCopy()}
+                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm flex items-center gap-1.5 flex-shrink-0"
+                      >
+                        {copied ? (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>Tersalin!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-4 h-4" />
+                            <span>Salin</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Quick Action Share Buttons */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => handleShareWhatsApp()}
+                        className="py-3 px-4 bg-[#25D366] hover:bg-[#1EBE5D] text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-md shadow-emerald-950/40"
+                      >
+                        <Send className="w-4 h-4" />
+                        <span>Bagikan ke WhatsApp</span>
+                      </button>
+
+                      <a
+                        href={generatedLink}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 border border-slate-700"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                        <span>Buka Formulir</span>
+                      </a>
+                    </div>
+
+                    {/* QR Code Container */}
+                    <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row items-center gap-4">
+                      <div className="p-3 bg-white rounded-2xl shadow-inner flex items-center justify-center">
+                        <QRCodeCanvas
+                          id="reg-link-qr-canvas"
+                          value={generatedLink}
+                          size={130}
+                          level="M"
+                          includeMargin={true}
+                        />
+                      </div>
+                      <div className="flex-1 space-y-2 text-center sm:text-left">
+                        <p className="text-xs font-bold text-white">QR Code Pendaftaran</p>
+                        <p className="text-[11px] text-slate-400">
+                          Jamaah dapat memindai QR code ini di masjid atau selebaran untuk langsung mengisi form.
+                        </p>
+                        <div className="flex flex-wrap gap-2 justify-center sm:justify-start pt-1">
+                          <button
+                            type="button"
+                            onClick={handleDownloadQR}
+                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 border border-slate-700"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Unduh PNG</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handlePrintPoster}
+                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 border border-slate-700"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Cetak Poster</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </>
+            ) : (
+              /* Riwayat Tautan Tab */
+              <div className="space-y-3">
+                {historyLinks.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-50 rounded-2xl border border-slate-100 text-slate-400 text-xs">
+                    Belum ada riwayat tautan pendaftaran yang dibuat.
+                  </div>
+                ) : (
+                  historyLinks.map((item) => {
+                    const isItemExpired = Date.now() > item.expiresAt;
+                    const fullUrl = `${window.location.origin}${window.location.pathname}?register_jamaah=true&token=${item.token}`;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="p-4 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200/80 transition-all space-y-2.5 text-xs"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-900">{item.location || 'Seluruh Lokasi'}</span>
+                            <span
+                              className={cn(
+                                "px-2 py-0.5 rounded-full text-[10px] font-black uppercase",
+                                isItemExpired
+                                  ? "bg-slate-200 text-slate-600"
+                                  : "bg-emerald-100 text-emerald-800"
+                              )}
+                            >
+                              {isItemExpired ? 'Kedaluwarsa' : 'Aktif'}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-slate-400">
+                            Dibuat: {new Date(item.createdAt).toLocaleDateString('id-ID')}
+                          </span>
+                        </div>
+
+                        {item.note && (
+                          <p className="text-slate-600 text-[11px] italic">"{item.note}"</p>
+                        )}
+
+                        <div className="flex justify-between items-center text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">
+                          <span>
+                            Berlaku hingga: <strong>{new Date(item.expiresAt).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })}</strong>
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(fullUrl)}
+                              className="px-2.5 py-1 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1"
+                            >
+                              <Copy className="w-3 h-3" />
+                              <span>Salin</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleShareWhatsApp(fullUrl, item.location, item.expiresAt)}
+                              className="px-2.5 py-1 bg-[#25D366] text-white rounded-lg font-bold hover:bg-[#1EBE5D] flex items-center gap-1"
+                            >
+                              <Send className="w-3 h-3" />
+                              <span>WA</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteHistory(item.id)}
+                              className="px-2 py-1 text-red-500 hover:bg-red-50 rounded-lg"
+                              title="Hapus dari riwayat"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+function LoginView({ onAttendanceMode, onRegisterJamaahMode }: { onAttendanceMode: () => void, onRegisterJamaahMode?: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isRegister, setIsRegister] = useState(false);
@@ -600,7 +2552,7 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <LayoutDashboard className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Masjid</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Desa GND</h1>
           <p className="text-slate-500 mt-2">Silakan masuk ke akun Anda</p>
         </div>
 
@@ -701,19 +2653,33 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
         </form>
 
         <div className="mt-8 pt-6 border-t border-slate-100 space-y-4">
-          <button 
-            onClick={onAttendanceMode}
-            className="flex items-center justify-center gap-3 w-full py-4 rounded-2xl bg-slate-900 text-white font-black uppercase tracking-wider text-xs hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200"
-          >
-            <Clock className="w-5 h-5 text-emerald-400" />
-            Mode Absensi Jamaah
-          </button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <button 
+              type="button"
+              onClick={onAttendanceMode}
+              className="flex items-center justify-center gap-2 w-full py-3.5 rounded-2xl bg-slate-900 text-white font-black uppercase tracking-wider text-[11px] hover:bg-slate-800 transition-all active:scale-95 shadow-md shadow-slate-200"
+            >
+              <Clock className="w-4 h-4 text-emerald-400" />
+              <span>Mode Absensi</span>
+            </button>
+            {onRegisterJamaahMode && (
+              <button 
+                type="button"
+                onClick={onRegisterJamaahMode}
+                className="flex items-center justify-center gap-2 w-full py-3.5 rounded-2xl bg-emerald-50 text-emerald-800 border border-emerald-200 font-black uppercase tracking-wider text-[11px] hover:bg-emerald-100 transition-all active:scale-95 shadow-sm"
+              >
+                <UserPlus className="w-4 h-4 text-emerald-600" />
+                <span>Daftar Mandiri</span>
+              </button>
+            )}
+          </div>
           
           <button
+            type="button"
             onClick={() => setIsRegister(!isRegister)}
             className="w-full py-2 text-sm font-bold text-slate-500 hover:text-emerald-600 transition-colors"
           >
-            {isRegister ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar'}
+            {isRegister ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar Akun Pengurus'}
           </button>
         </div>
       </motion.div>
@@ -777,7 +2743,7 @@ function ActivityImageSlider({ images }: { images?: any }) {
     <div className="relative w-full h-full overflow-hidden group">
       <AnimatePresence initial={false} mode="wait">
         <motion.img
-          key={activeSrc}
+          key={`${activeSrc}-${index}`}
           src={activeSrc}
           initial={{ opacity: 0, scale: 1.1 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -817,11 +2783,18 @@ function Overview({ profile }: { profile: UserProfile }) {
   const totalKK = useMemo(() => jamaah.filter(j => j.isKK).length, [jamaah]);
 
   const jamaahCategories = useMemo(() => {
-    const counts: Record<string, number> = { 'UMUM': 0, 'ACR': 0, 'APR': 0, 'GPN': 0 };
+    const counts: Record<string, number> = { 'UMUM': 0, 'GPN': 0, 'APR': 0, 'ACR': 0, 'DUDA': 0, 'JANDA': 0 };
     jamaah.forEach(j => {
-      if (counts[j.category] !== undefined) counts[j.category]++;
+      const cat = (j.category || 'UMUM').toUpperCase();
+      if (counts[cat] !== undefined) {
+        counts[cat]++;
+      } else {
+        counts[cat] = (counts[cat] || 0) + 1;
+      }
     });
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+    return Object.entries(counts)
+      .filter(([_, value]) => value > 0 || ['UMUM', 'GPN', 'APR', 'ACR'].includes(_))
+      .map(([name, value]) => ({ name, value }));
   }, [jamaah]);
 
   const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
@@ -834,7 +2807,7 @@ function Overview({ profile }: { profile: UserProfile }) {
         <StatCard title={`Total Luas Tanah - ${profile.location || 'Desa GND'}`} value={`${totalTanahArea} m²`} icon={MapIcon} color="bg-blue-500" />
         {stats.slice(0, 2).map((stat, i) => (
           <StatCard 
-            key={stat.id} 
+            key={stat.id ? `${stat.id}-${i}` : `overview-stat-${i}`} 
             title={stat.name} 
             value={stat.currentUsage} 
             total={stat.capacity} 
@@ -944,9 +2917,9 @@ function Overview({ profile }: { profile: UserProfile }) {
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {activities.sort((a,b) => b.date - a.date).slice(0, 3).map((activity) => (
+          {activities.sort((a,b) => b.date - a.date).slice(0, 3).map((activity, actIdx) => (
             <motion.div 
-              key={activity.id}
+              key={activity.id ? `${activity.id}-${actIdx}` : `overview-act-${actIdx}`}
               whileHover={{ y: -4 }}
               className="bg-white rounded-[2rem] overflow-hidden border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-slate-100 transition-all group"
             >
@@ -1018,11 +2991,15 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
   const [base64Image, setBase64Image] = useState<string | null>(null);
   const [isKK, setIsKK] = useState(true);
   const [selectedKKId, setSelectedKKId] = useState<string>('');
+  const [kkSearchTerm, setKkSearchTerm] = useState<string>('');
+  const [isKkDropdownOpen, setIsKkDropdownOpen] = useState<boolean>(false);
   const [selectedDapukan, setSelectedDapukan] = useState<string[]>([]);
   const [dapukanFilter, setDapukanFilter] = useState('');
   const [hasHajjStatus, setHasHajjStatus] = useState<string>('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [showRegistrationLinkModal, setShowRegistrationLinkModal] = useState(false);
   const [formTab, setFormTab] = useState<'identitas' | 'keluarga' | 'pendidikan' | 'dapukan' | 'keilmuan'>('identitas');
 
   useEffect(() => {
@@ -1032,6 +3009,8 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       setBase64Image(null);
       setIsKK(true);
       setSelectedKKId('');
+      setKkSearchTerm('');
+      setIsKkDropdownOpen(false);
       setSelectedDapukan([]);
       setHasHajjStatus('');
       setFormTab('identitas');
@@ -1181,12 +3160,15 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       medicalHistory: (formData.get('medicalHistory') as string) || ''
     };
 
+    setIsSaving(true);
     try {
       await saveData(null, accessToken, spreadsheetId, 'jamaah', data, editingJamaah?.id);
       showToast(`Data jamaah ${data.name} berhasil disimpan!`, 'success');
       closeForm();
     } catch (err: any) {
       showToast(`Gagal menyimpan data: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -1196,6 +3178,8 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     setBase64Image(null);
     setIsKK(true);
     setSelectedKKId('');
+    setKkSearchTerm('');
+    setIsKkDropdownOpen(false);
     setSelectedDapukan([]);
     setHasHajjStatus('');
     setFormTab('identitas');
@@ -1204,8 +3188,16 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
   const openEdit = (j: Jamaah) => {
     setEditingJamaah(j);
     setBase64Image(j.photoUrl || null);
-    setIsKK(j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE');
+    const kkStatus = j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE';
+    setIsKK(kkStatus);
     setSelectedKKId(j.kkId || '');
+    if (!kkStatus && j.kkId) {
+      const match = headsOfFamily.find(k => k.memberId === j.kkId);
+      setKkSearchTerm(match ? `${match.memberId} - ${match.name}` : j.kkId);
+    } else {
+      setKkSearchTerm('');
+    }
+    setIsKkDropdownOpen(false);
     const currentDapukan = Array.isArray(j.dapukan) && j.dapukan.length > 0 
       ? j.dapukan 
       : (Array.isArray(j.positions) ? j.positions : []);
@@ -1222,16 +3214,28 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
           <h2 className="text-2xl font-bold text-slate-900">Data Jamaah</h2>
           <p className="text-slate-500">Kelola data jamaah {profile.role === 'pengurus' ? `di ${profile.location}` : 'seluruh lokasi'}</p>
         </div>
-        <button 
-          onClick={() => {
-            closeForm();
-            setShowForm(true);
-          }}
-          className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
-        >
-          <Plus className="w-5 h-5" />
-          Tambah Jamaah
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button 
+            type="button"
+            onClick={() => setShowRegistrationLinkModal(true)}
+            className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
+            title="Generate Link Pengisian Jamaah Mandiri"
+          >
+            <Share2 className="w-4 h-4 text-emerald-600" />
+            <span>Bagikan Link Pengisian</span>
+          </button>
+          <button 
+            type="button"
+            onClick={() => {
+              closeForm();
+              setShowForm(true);
+            }}
+            className="bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 active:scale-95 text-xs sm:text-sm"
+          >
+            <Plus className="w-5 h-5" />
+            <span>Tambah Jamaah</span>
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
@@ -1273,10 +3277,10 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                 </tr>
               ) : filteredJamaah.length === 0 ? (
                 <tr><td colSpan={7} className="px-6 py-8 text-center text-slate-400">Tidak ada data ditemukan</td></tr>
-              ) : paginatedJamaah.map((j) => {
+              ) : paginatedJamaah.map((j, jIdx) => {
                 const dapukanList = j.dapukan || j.positions || [];
                 return (
-                  <tr key={j.id} className="hover:bg-slate-50 transition-colors">
+                  <tr key={j.id ? `${j.id}-${jIdx}` : `jamaah-${jIdx}`} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4">
                       <div className="w-10 h-10 rounded-full bg-slate-100 overflow-hidden flex items-center justify-center mx-auto">
                         {j.photoUrl ? (
@@ -1298,8 +3302,8 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-1 max-w-xs">
                         {dapukanList.length > 0 ? (
-                          dapukanList.map(p => (
-                            <span key={p} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[9px] font-bold uppercase whitespace-nowrap">
+                          dapukanList.map((p, pIdx) => (
+                            <span key={`${p}-${pIdx}`} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[9px] font-bold uppercase whitespace-nowrap">
                               {p}
                             </span>
                           ))
@@ -1482,8 +3486,8 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <span className="text-slate-400 block text-xs mb-1">Dapukan Saat Ini</span>
                       <div className="flex flex-wrap gap-1">
                         {(selectedJamaahDetail.dapukan || selectedJamaahDetail.positions || []).length > 0 ? (
-                          (selectedJamaahDetail.dapukan || selectedJamaahDetail.positions || []).map(d => (
-                            <span key={d} className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-xs">{d}</span>
+                          (selectedJamaahDetail.dapukan || selectedJamaahDetail.positions || []).map((d, dIdx) => (
+                            <span key={`${d}-${dIdx}`} className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-xs">{d}</span>
                           ))
                         ) : (
                           <span className="font-semibold italic text-slate-400">Belum ada dapukan</span>
@@ -1557,6 +3561,31 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                   <X className="w-5 h-5" />
                 </button>
               </div>
+
+              {!editingJamaah && (
+                <div className="mb-4 p-3 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-2xl border border-emerald-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-sm flex-shrink-0">
+                      <Share2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-slate-800">Ingin jamaah mengisi datanya sendiri?</p>
+                      <p className="text-[11px] text-slate-500">Buat link pendaftaran mandiri berbatas waktu (expired date) & QR Code.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeForm();
+                      setShowRegistrationLinkModal(true);
+                    }}
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-1.5 flex-shrink-0 active:scale-95"
+                  >
+                    <LinkIcon className="w-3.5 h-3.5" />
+                    <span>Buat Link Pengisian</span>
+                  </button>
+                </div>
+              )}
 
               {/* Form Navigation Tabs */}
               <div className="flex border-b border-slate-100 gap-1 overflow-x-auto pb-2 mb-4 scrollbar-none">
@@ -1661,18 +3690,128 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                   </div>
 
                   {!isKK && (
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1">Pilih Kepala Keluarga *</label>
-                      <select 
-                        value={selectedKKId} 
-                        onChange={(e) => setSelectedKKId(e.target.value)}
-                        className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white"
-                      >
-                        <option value="">Pilih KK...</option>
-                        {headsOfFamily.filter(kk => kk.id !== editingJamaah?.id).map(kk => (
-                          <option key={kk.id} value={kk.memberId}>{kk.memberId} - {kk.name}</option>
-                        ))}
-                      </select>
+                    <div className="relative">
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Pilih Kepala Keluarga (KK) <span className="text-rose-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <div className="relative flex items-center">
+                          <Search className="absolute left-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                          <input 
+                            type="text"
+                            placeholder="Cari KK berdasarkan Nama, ID, atau Telepon..."
+                            value={kkSearchTerm}
+                            onChange={(e) => {
+                              setKkSearchTerm(e.target.value);
+                              setIsKkDropdownOpen(true);
+                            }}
+                            onFocus={() => setIsKkDropdownOpen(true)}
+                            className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white font-medium"
+                          />
+                          {selectedKKId ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedKKId('');
+                                setKkSearchTerm('');
+                              }}
+                              className="absolute right-3 p-1 text-slate-400 hover:text-rose-500 rounded-md transition-colors"
+                              title="Hapus pilihan KK"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <ChevronDown 
+                              className="absolute right-3 w-4 h-4 text-slate-400 cursor-pointer"
+                              onClick={() => setIsKkDropdownOpen(prev => !prev)}
+                            />
+                          )}
+                        </div>
+
+                        {selectedKKId && (
+                          <div className="mt-1.5 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
+                            {(() => {
+                              const currKK = headsOfFamily.find(k => k.memberId === selectedKKId);
+                              return (
+                                <div className="flex items-center gap-2 overflow-hidden">
+                                  <span className="px-2 py-0.5 rounded bg-emerald-600 text-white font-mono font-black text-xs shrink-0">{selectedKKId}</span>
+                                  <span className="text-xs font-bold text-emerald-950 truncate">{currKK?.name || 'Kepala Keluarga Terpilih'}</span>
+                                  {currKK?.location && (
+                                    <span className="text-[10px] text-emerald-700 bg-emerald-100/80 px-1.5 py-0.5 rounded font-bold shrink-0">{currKK.location}</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                            <span className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider shrink-0 ml-2">KK Aktif</span>
+                          </div>
+                        )}
+
+                        {isKkDropdownOpen && (
+                          <>
+                            <div 
+                              className="fixed inset-0 z-40" 
+                              onClick={() => setIsKkDropdownOpen(false)}
+                            />
+                            <div className="absolute z-50 w-full mt-1.5 bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden max-h-60 overflow-y-auto divide-y divide-slate-100">
+                              {(() => {
+                                const eligibleKKs = headsOfFamily
+                                  .filter(kk => kk.id !== editingJamaah?.id)
+                                  .filter(kk => {
+                                    if (!kkSearchTerm.trim()) return true;
+                                    const term = kkSearchTerm.toLowerCase();
+                                    return (
+                                      kk.name.toLowerCase().includes(term) ||
+                                      kk.memberId.toLowerCase().includes(term) ||
+                                      (kk.nickname && kk.nickname.toLowerCase().includes(term)) ||
+                                      (kk.phone && kk.phone.includes(term)) ||
+                                      (kk.location && kk.location.toLowerCase().includes(term))
+                                    );
+                                  });
+
+                                if (eligibleKKs.length === 0) {
+                                  return (
+                                    <div className="p-4 text-center text-xs text-slate-400 italic">
+                                      Tidak ada Kepala Keluarga yang cocok dengan pencarian "{kkSearchTerm}"
+                                    </div>
+                                  );
+                                }
+
+                                return eligibleKKs.map((kk, kkIdx) => (
+                                  <button
+                                    key={kk.id ? `${kk.id}-${kkIdx}` : `kk-search-${kkIdx}`}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedKKId(kk.memberId);
+                                      setKkSearchTerm(`${kk.memberId} - ${kk.name}`);
+                                      setIsKkDropdownOpen(false);
+                                    }}
+                                    className={cn(
+                                      "w-full px-4 py-2.5 text-left hover:bg-slate-50 transition-colors flex items-center justify-between gap-2",
+                                      selectedKKId === kk.memberId ? "bg-emerald-50/70 text-emerald-950 font-bold" : "text-slate-800"
+                                    )}
+                                  >
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                      <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-black text-xs shrink-0">
+                                        {kk.name.charAt(0).toUpperCase()}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-xs truncate flex items-center gap-1.5">
+                                          <span>{kk.name}</span>
+                                          {kk.nickname && <span className="text-slate-400 font-normal">({kk.nickname})</span>}
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 font-mono font-medium">{kk.memberId} {kk.phone ? `• ${kk.phone}` : ''}</div>
+                                      </div>
+                                    </div>
+                                    <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 font-bold text-slate-600 shrink-0">
+                                      {kk.location}
+                                    </span>
+                                  </button>
+                                ));
+                              })()}
+                            </div>
+                          </>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1681,9 +3820,11 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
                       <select name="category" defaultValue={editingJamaah?.category || 'UMUM'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
                         <option value="UMUM">UMUM</option>
-                        <option value="ACR">ACR (Anak Caberawit)</option>
-                        <option value="APR">APR (Anak Pra Remaja)</option>
                         <option value="GPN">GPN (Generus Pra Nikah)</option>
+                        <option value="APR">APR (Anak Pra Remaja)</option>
+                        <option value="ACR">ACR (Anak Caberawit)</option>
+                        <option value="DUDA">DUDA</option>
+                        <option value="JANDA">JANDA</option>
                       </select>
                     </div>
                     {profile.role === 'admin' && (
@@ -1831,10 +3972,10 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                   </div>
 
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 p-3 bg-slate-50 rounded-2xl border border-slate-100 max-h-64 overflow-y-auto">
-                    {DAPUKAN_OPTIONS.filter(d => d.toLowerCase().includes(dapukanFilter.toLowerCase())).map(pos => {
+                    {DAPUKAN_OPTIONS.filter(d => d.toLowerCase().includes(dapukanFilter.toLowerCase())).map((pos, posIdx) => {
                       const isChecked = selectedDapukan.includes(pos);
                       return (
-                        <label key={pos} className={cn(
+                        <label key={`${pos}-${posIdx}`} className={cn(
                           "flex items-center gap-2.5 p-2 rounded-xl border transition-all cursor-pointer text-xs font-medium",
                           isChecked 
                             ? "bg-emerald-50 border-emerald-500 text-emerald-900 font-bold shadow-sm" 
@@ -1967,9 +4108,27 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
 
                 {/* Form Action Buttons */}
                 <div className="flex gap-3 pt-6 border-t mt-4">
-                  <button type="button" onClick={closeForm} className="flex-1 px-6 py-2.5 rounded-xl border hover:bg-slate-50 transition-all font-semibold text-sm text-slate-700">Batal</button>
-                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-all font-semibold text-sm shadow-lg shadow-emerald-200">
-                    {editingJamaah ? 'Simpan Perubahan' : 'Simpan Data Jamaah'}
+                  <button 
+                    type="button" 
+                    onClick={closeForm} 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl border hover:bg-slate-50 transition-all font-semibold text-sm text-slate-700 disabled:opacity-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit" 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-all font-semibold text-sm shadow-lg shadow-emerald-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      editingJamaah ? 'Simpan Perubahan' : 'Simpan Data Jamaah'
+                    )}
                   </button>
                 </div>
               </form>
@@ -1977,6 +4136,13 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Modal Generate Link Pendaftaran Mandiri */}
+      <RegistrationLinkModal
+        isOpen={showRegistrationLinkModal}
+        onClose={() => setShowRegistrationLinkModal(false)}
+        profile={profile}
+      />
     </div>
   );
 }
@@ -2008,6 +4174,7 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [base64Image, setBase64Image] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2051,12 +4218,15 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
       description: formData.get('description') as string
     };
 
+    setIsSaving(true);
     try {
       await saveData(null, accessToken, spreadsheetId, 'assets', data, editingAsset?.id);
       showToast(`Data ${isTanah ? 'tanah' : 'barang'} ${data.name} berhasil disimpan!`, 'success');
       closeForm();
     } catch (err: any) {
       showToast(`Gagal menyimpan data: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -2108,9 +4278,9 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {paginatedAssets.map((asset) => (
+            {paginatedAssets.map((asset, assetIdx) => (
               <motion.div 
-                key={asset.id}
+                key={asset.id ? `${asset.id}-${assetIdx}` : `asset-${assetIdx}`}
                 layout
                 className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col"
               >
@@ -2291,8 +4461,28 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
                 </div>
 
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={closeForm} className="flex-1 px-6 py-2.5 rounded-xl border font-semibold text-slate-600 hover:bg-slate-50 transition-all">Batal</button>
-                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100">Simpan</button>
+                  <button 
+                    type="button" 
+                    onClick={closeForm} 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl border font-semibold text-slate-600 hover:bg-slate-50 transition-all disabled:opacity-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit" 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      'Simpan'
+                    )}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -2321,6 +4511,7 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
   const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [base64Images, setBase64Images] = useState<string[]>([]);
 
   const handleImagesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2348,12 +4539,15 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
       createdBy: profile.uid
     };
 
+    setIsSaving(true);
     try {
       await saveData(null, accessToken, spreadsheetId, 'activities', data, editingActivity?.id);
       showToast('Data kegiatan berhasil disimpan!', 'success');
       closeForm();
     } catch (err: any) {
       showToast(`Gagal menyimpan data: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -2403,15 +4597,15 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {paginatedActivities.map((activity) => {
+            {paginatedActivities.map((activity, actIdx) => {
               const actImages = parseImageUrls(activity.imageUrls);
               return (
-                <div key={activity.id} className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm flex flex-col">
+                <div key={activity.id ? `${activity.id}-${actIdx}` : `act-${actIdx}`} className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm flex flex-col">
                   <div className="h-56 relative group">
                     <div className="w-full h-full flex overflow-x-auto snap-x snap-mandatory scrollbar-hide">
                       {actImages.length > 0 ? (
-                        actImages.map((url, idx) => (
-                          <img key={idx} src={url} className="w-full h-full object-cover flex-shrink-0 snap-center" />
+                        actImages.map((url, imgIdx) => (
+                          <img key={`act-img-${actIdx}-${imgIdx}`} src={url} className="w-full h-full object-cover flex-shrink-0 snap-center" />
                         ))
                       ) : (
                         <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
@@ -2527,8 +4721,28 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
                   </div>
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={closeForm} className="flex-1 px-6 py-2.5 rounded-xl border font-semibold">Batal</button>
-                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold">Simpan</button>
+                  <button 
+                    type="button" 
+                    onClick={closeForm} 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl border font-semibold hover:bg-slate-50 transition-all disabled:opacity-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit" 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      'Simpan'
+                    )}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -2577,6 +4791,7 @@ function FacilityView({ profile }: { profile: UserProfile }) {
   const [editingStat, setEditingStat] = useState<FacilityStat | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const updateUsage = async (id: string, current: number, capacity: number, delta: number) => {
     const newVal = Math.max(0, Math.min(capacity, current + delta));
@@ -2601,12 +4816,15 @@ function FacilityView({ profile }: { profile: UserProfile }) {
       updatedAt: Date.now()
     };
 
+    setIsSaving(true);
     try {
       await saveData(null, accessToken, spreadsheetId, 'facility_stats', data, editingStat?.id);
       showToast('Data fasilitas berhasil disimpan!', 'success');
       closeForm();
     } catch (err: any) {
       showToast(`Gagal menyimpan data: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -2657,8 +4875,8 @@ function FacilityView({ profile }: { profile: UserProfile }) {
       ) : (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {paginatedStats.map((stat) => (
-              <div key={stat.id} className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+            {paginatedStats.map((stat, statIdx) => (
+              <div key={stat.id ? `${stat.id}-${statIdx}` : `stat-${statIdx}`} className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
                 <div className="flex items-center justify-between mb-8">
                   <h3 className="text-xl font-bold text-slate-900">{stat.name}</h3>
                   <div className="flex items-center gap-3">
@@ -2746,8 +4964,28 @@ function FacilityView({ profile }: { profile: UserProfile }) {
                   <input type="number" name="capacity" defaultValue={editingStat?.capacity} required className="w-full px-4 py-2 rounded-xl border outline-none" />
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={closeForm} className="flex-1 px-6 py-2.5 rounded-xl border font-semibold">Batal</button>
-                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold">Simpan</button>
+                  <button 
+                    type="button" 
+                    onClick={closeForm} 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl border font-semibold hover:bg-slate-50 transition-all disabled:opacity-50"
+                  >
+                    Batal
+                  </button>
+                  <button 
+                    type="submit" 
+                    disabled={isSaving}
+                    className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      'Simpan'
+                    )}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -2972,8 +5210,8 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
           <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-4">Berdasarkan Kategori</p>
           <div className="flex flex-wrap gap-2">
-            {Object.entries(stats.byCategory).map(([cat, count]) => (
-              <div key={cat} className="px-3 py-2 bg-slate-50 rounded-xl flex items-center gap-3">
+            {Object.entries(stats.byCategory).map(([cat, count], catIdx) => (
+              <div key={`stat-cat-${cat}-${catIdx}`} className="px-3 py-2 bg-slate-50 rounded-xl flex items-center gap-3">
                 <span className="text-xs font-black text-slate-900">{cat}</span>
                 <span className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-700 text-[10px] flex items-center justify-center font-black">{count}</span>
               </div>
@@ -2985,8 +5223,8 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
         <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
           <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-4">Berdasarkan Sesi</p>
           <div className="flex flex-wrap gap-2">
-            {Object.entries(stats.bySession).map(([sess, count]) => (
-              <div key={sess} className="px-3 py-2 bg-slate-50 rounded-xl flex items-center gap-3">
+            {Object.entries(stats.bySession).map(([sess, count], sessIdx) => (
+              <div key={`stat-sess-${sess}-${sessIdx}`} className="px-3 py-2 bg-slate-50 rounded-xl flex items-center gap-3">
                 <span className="text-xs font-black text-slate-900">{sess}</span>
                 <span className="w-6 h-6 rounded-lg bg-blue-100 text-blue-700 text-[10px] flex items-center justify-center font-black">{count}</span>
               </div>
@@ -3023,15 +5261,15 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
                   </td>
                 </tr>
               ) : Object.keys(groupedData).length > 0 ? (
-                Object.entries(groupedData).map(([date, items]: [string, Attendance[]]) => (
-                  <React.Fragment key={date}>
+                Object.entries(groupedData).map(([date, items]: [string, Attendance[]], grpIdx) => (
+                  <React.Fragment key={`group-${date}-${grpIdx}`}>
                     <tr className="bg-slate-50/30">
                       <td colSpan={10} className="px-6 py-3 text-[10px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50/30">
                         {date} ({items.length} Absensi)
                       </td>
                     </tr>
-                    {items.map((a) => (
-                      <tr key={a.id} className="hover:bg-slate-50 transition-colors group">
+                    {items.map((a, aIdx) => (
+                      <tr key={a.id ? `${a.id}-${aIdx}` : `att-row-${grpIdx}-${aIdx}`} className="hover:bg-slate-50 transition-colors group">
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-xl bg-slate-100 flex flex-col items-center justify-center group-hover:bg-white transition-colors">
@@ -3501,7 +5739,7 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
                     Tidak ada data kepala keluarga untuk lokasi ini
                   </td>
                 </tr>
-              ) : paginatedKKList.map((j) => {
+              ) : paginatedKKList.map((j, jIdx) => {
                 const total = shoppingByKK[j.id] || 0;
                 const isMet = total >= 100000;
                 const remaining = Math.max(0, 100000 - total);
@@ -3511,7 +5749,7 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
                 const familyRecords = shoppingRecords.filter(r => familyIds.includes(r.jamaahId));
                 
                 return (
-                  <tr key={j.id} className="hover:bg-slate-50/50 transition-colors">
+                  <tr key={j.id ? `${j.id}-${jIdx}` : `kk-row-${jIdx}`} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex flex-col">
                         <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">{j.memberId}</span>
@@ -3542,11 +5780,11 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex justify-end gap-2 flex-wrap max-w-[150px]">
-                        {familyRecords.map(r => {
+                        {familyRecords.map((r, rIdx) => {
                           const recordJamaah = allJamaah.find(jm => jm.id === r.jamaahId);
                           return (
                             <button 
-                              key={r.id}
+                              key={r.id ? `${r.id}-${rIdx}` : `fam-rec-${jIdx}-${rIdx}`}
                               onClick={() => { 
                                 setEditingShopping(r); 
                                 setSelectedJamaahId(r.jamaahId);
@@ -3621,9 +5859,9 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
                     {isSearchOpen && (
                       <div className="absolute z-50 w-full mt-2 bg-white rounded-2xl border border-slate-100 shadow-xl overflow-hidden max-h-60 overflow-y-auto">
                         {filteredJamaah.length > 0 ? (
-                          filteredJamaah.map(j => (
+                          filteredJamaah.map((j, jIdx) => (
                             <button
-                              key={j.id}
+                              key={j.id ? `${j.id}-${jIdx}` : `ub-search-j-${jIdx}`}
                               type="button"
                               onClick={() => {
                                 setSelectedJamaahId(j.id);
@@ -4150,13 +6388,13 @@ function UsersView({ profile }: { profile?: any }) {
                 </td>
               </tr>
             ) : (
-              paginatedUsers.map((u) => {
-                const userId = u.uid || u.id;
+              paginatedUsers.map((u, uIdx) => {
+                const userId = u.uid || u.id || u.email || `user-${uIdx}`;
                 const isVerified = u.isVerified === true || (u.isVerified as any) === 'true' || (u.isVerified as any) === 'TRUE';
                 const isCurrentUser = profile && (profile.uid === userId || (profile.email && u.email && profile.email.toLowerCase() === u.email.toLowerCase()));
 
                 return (
-                  <tr key={userId} className="hover:bg-slate-50 transition-colors">
+                  <tr key={`${userId}-${uIdx}`} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className={cn(
@@ -4910,7 +7148,13 @@ function DashboardContent() {
   const [activeTab, setActiveTab] = useState('overview');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [formTrigger, setFormTrigger] = useState<string | null>(null);
-  const [isAttendanceMode, setIsAttendanceMode] = useState(false);
+  const [isAttendanceMode, setIsAttendanceMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('attendance') === 'true' || Boolean(params.get('location'));
+    }
+    return false;
+  });
 
   const handleCheckStatus = useCallback(async () => {
     if (syncProfileFromSheet && user?.uid) {
@@ -4925,7 +7169,17 @@ function DashboardContent() {
   );
 
   if (isAttendanceMode) {
-    return <PublicAttendanceView onBack={() => setIsAttendanceMode(false)} spreadsheetId={spreadsheetId || undefined} />;
+    return (
+      <PublicAttendanceView 
+        onBack={() => {
+          setIsAttendanceMode(false);
+          if (typeof window !== 'undefined' && window.history) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        }} 
+        spreadsheetId={spreadsheetId || undefined} 
+      />
+    );
   }
 
   if (!user || !profile) return <LoginView onAttendanceMode={() => setIsAttendanceMode(true)} />;
@@ -4948,6 +7202,7 @@ function DashboardContent() {
     switch (activeTab) {
       case 'overview': return <Overview profile={profileWithSheet} />;
       case 'jamaah': return <JamaahView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} />;
+      case 'cacah_jiwa': return <CacahJiwaView profile={profileWithSheet} />;
       case 'inventaris': return <InventarisView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} assetType="barang" />;
       case 'tanah': return <InventarisView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} assetType="tanah" />;
       case 'activities': return <ActivitiesView profile={profileWithSheet} />;
@@ -4976,6 +7231,7 @@ function DashboardContent() {
         <nav className="flex-grow p-6 space-y-2 overflow-y-auto">
           <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
           <SidebarItem icon={Users} label="Data Jamaah" active={activeTab === 'jamaah'} onClick={() => setActiveTab('jamaah')} />
+          <SidebarItem icon={FileSpreadsheet} label="Cacah Jiwa" active={activeTab === 'cacah_jiwa'} onClick={() => setActiveTab('cacah_jiwa')} />
           <SidebarItem icon={Package} label="Inventaris" active={activeTab === 'inventaris'} onClick={() => setActiveTab('inventaris')} />
           <SidebarItem icon={MapIcon} label="Tanah Sabilillah" active={activeTab === 'tanah'} onClick={() => setActiveTab('tanah')} />
           <SidebarItem icon={Calendar} label="Kegiatan" active={activeTab === 'activities'} onClick={() => setActiveTab('activities')} />
@@ -5043,6 +7299,7 @@ function DashboardContent() {
               <nav className="flex-grow p-4 space-y-2 overflow-y-auto">
                 <SidebarItem icon={LayoutDashboard} label="Dashboard" active={activeTab === 'overview'} onClick={() => { setActiveTab('overview'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={Users} label="Data Jamaah" active={activeTab === 'jamaah'} onClick={() => { setActiveTab('jamaah'); setIsMobileMenuOpen(false); }} />
+                <SidebarItem icon={FileSpreadsheet} label="Cacah Jiwa" active={activeTab === 'cacah_jiwa'} onClick={() => { setActiveTab('cacah_jiwa'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={Package} label="Inventaris" active={activeTab === 'inventaris'} onClick={() => { setActiveTab('inventaris'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={MapIcon} label="Tanah Sabilillah" active={activeTab === 'tanah'} onClick={() => { setActiveTab('tanah'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={Calendar} label="Kegiatan" active={activeTab === 'activities'} onClick={() => { setActiveTab('activities'); setIsMobileMenuOpen(false); }} />

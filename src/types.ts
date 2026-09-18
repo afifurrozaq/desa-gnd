@@ -23,7 +23,7 @@ export interface UserProfile {
   spreadsheetId?: string;
 }
 
-export type JamaahCategory = 'UMUM' | 'ACR' | 'APR' | 'GPN';
+export type JamaahCategory = 'UMUM' | 'ACR' | 'APR' | 'GPN' | 'DUDA' | 'JANDA' | string;
 
 export interface Jamaah {
   id: string;
@@ -130,3 +130,15 @@ export interface UBShopping {
   note?: string;
   createdAt: number;
 }
+
+export interface RegistrationLink {
+  id: string;
+  token: string;
+  location?: MosqueLocation | 'Seluruh Lokasi';
+  expiresAt: number;
+  createdAt: number;
+  createdBy: string;
+  note?: string;
+  isActive: boolean;
+}
+

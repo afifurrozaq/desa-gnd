@@ -72,11 +72,11 @@ export function Pagination({
               }}
               className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer shadow-2xs"
             >
-              {pageSizeOptions.map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
+            {pageSizeOptions.map((opt, optIdx) => (
+              <option key={`page-size-${opt}-${optIdx}`} value={opt}>
+                {opt}
+              </option>
+            ))}
             </select>
           </div>
         )}
@@ -105,7 +105,7 @@ export function Pagination({
             const isCurrent = page === currentPage;
             return (
               <button
-                key={`page-${page}`}
+                key={`page-btn-${page}-${idx}`}
                 onClick={() => onPageChange(Number(page))}
                 className={cn(
                   "min-w-8 h-8 px-2.5 rounded-xl text-xs font-bold transition-all shadow-2xs",
