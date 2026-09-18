@@ -901,10 +901,10 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               <div className="space-y-4 mb-6">
                 <div>
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
-                    1. Lokasi Masjid
+                    1. Lokasi Kelompok
                   </label>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => (
+                    {['Pilih Kelompok', 'Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => (
                       <button
                         key={loc}
                         type="button"
@@ -1113,7 +1113,7 @@ const DAPUKAN_OPTIONS = [
   "Tim Manula", "Tim Mondar Mandir", "Tim Muballigh", "Tim Organisasi", 
   "Tim Pembangunan", "Tim Pkw", "Tim Penyelesaian", "Tim Pramuka", "Tim Sarjana", 
   "Tim Ub", "Tim Zakat", "Tim Cai & Remaja (Karemdes)", "Keputrian Des", 
-  "Ikel", "Wikel", "Pjkbm", "Boskel", "Mubkel", "Ku Kel", "Pakar Pendidik", "Ptk", "Keputkel"
+  "Ikel", "Wikel", "Pjkbm", "Boskel", "Mubkel", "Ku Kel", "Pakar Pendidik", "Ptk", "Keputkel", "Rokyah"
 ];
 
 // --- Public Jamaah Self-Registration View ---
@@ -1441,7 +1441,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
           </div>
 
           <p className="text-xs text-slate-500 mb-8 leading-relaxed">
-            Silakan hubungi pengurus kelompok atau admin masjid untuk meminta tautan pendaftaran mandiri yang baru.
+            Silakan hubungi pengurus kelompok atau admin desa untuk meminta tautan pendaftaran mandiri yang baru.
           </p>
 
           <button
@@ -1550,7 +1550,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
               <div>
                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">Pendaftaran Mandiri Jamaah</span>
                 <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">Formulir Data Jamaah</h1>
-                <p className="text-xs text-slate-400">Desa Gandaria • Terhubung Google Sheets</p>
+                <p className="text-xs text-slate-400">Desa Gandaria </p>
               </div>
             </div>
 
@@ -1820,16 +1820,20 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
                   <select name="category" defaultValue="UMUM" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
                     <option value="UMUM">UMUM</option>
-                    <option value="GPN">GPN (Generus Pra Nikah)</option>
-                    <option value="APR">APR (Anak Pra Remaja)</option>
-                    <option value="ACR">ACR (Anak Caberawit)</option>
+                    <option value="GPN_A">GPN A</option>
+                    <option value="GPN_B">GPN B</option>
+                    <option value="GPN_B_PLUS">GPN B+</option>
+                    <option value="AR">AR</option>
+                    <option value="APR">APR</option>
+                    <option value="ACR">ACR</option>
+                    <option value="AUD">AUD</option>
                     <option value="DUDA">DUDA</option>
                     <option value="JANDA">JANDA</option>
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Masjid</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Kelompok</label>
                   <select 
                     name="location" 
                     value={selectedLocation} 
@@ -1892,7 +1896,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
                   <select name="maritalStatus" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
                     <option value="">Pilih Status...</option>
-                    <option value="Muda Mudi">Muda Mudi</option>
+                    <option value="Belum Menikah">Belum Menikah</option>
                     <option value="Nikah">Nikah</option>
                     <option value="Janda">Janda</option>
                     <option value="Duda">Duda</option>
@@ -2176,7 +2180,7 @@ function RegistrationLinkModal({
   const [activeTab, setActiveTab] = useState<'create' | 'history'>('create');
   
   const [targetLocation, setTargetLocation] = useState<MosqueLocation | 'Seluruh Lokasi'>(() => {
-    return profile.location || 'Kramat Batu';
+    return profile.location || 'Pilih Kelompok';
   });
 
   const [durationOption, setDurationOption] = useState<'6h' | '12h' | '24h' | '3d' | '7d' | '14d' | '30d' | 'custom'>('24h');
@@ -2650,7 +2654,7 @@ function RegistrationLinkModal({
                       <div className="flex-1 space-y-2 text-center sm:text-left">
                         <p className="text-xs font-bold text-white">QR Code Pendaftaran</p>
                         <p className="text-[11px] text-slate-400">
-                          Jamaah dapat memindai QR code ini di masjid atau selebaran untuk langsung mengisi form.
+                          Jamaah dapat memindai QR code ini di kelompok atau selebaran untuk langsung mengisi form.
                         </p>
                         <div className="flex flex-wrap gap-2 justify-center sm:justify-start pt-1">
                           <button
@@ -2851,7 +2855,7 @@ function LoginView({ onAttendanceMode, onRegisterJamaahMode }: { onAttendanceMod
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <LayoutDashboard className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Masjid</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Desa GND</h1>
           <p className="text-slate-500 mt-2">Silakan masuk ke akun Anda</p>
         </div>
 
@@ -4101,18 +4105,21 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
                       <select name="category" defaultValue={editingJamaah?.category || 'UMUM'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
                         <option value="UMUM">UMUM</option>
-                        <option value="GPN">GPN (Generus Pra Nikah)</option>
-                        <option value="APR">APR (Anak Pra Remaja)</option>
-                        <option value="ACR">ACR (Anak Caberawit)</option>
+                        <option value="GPN_A">GPN A</option>
+                        <option value="GPN_B">GPN B</option>
+                        <option value="GPN_B_PLUS">GPN B+</option>
+                        <option value="APR">APR</option>
+                        <option value="ACR">ACR</option>
+                        <option value="AUD">AUD</option>
                         <option value="DUDA">DUDA</option>
                         <option value="JANDA">JANDA</option>
                       </select>
                     </div>
                     {profile.role === 'admin' && (
                       <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Masjid</label>
-                        <select name="location" defaultValue={editingJamaah?.location || 'Kramat Batu'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
-                          {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Kelompok</label>
+                        <select name="location" defaultValue={editingJamaah?.location || 'Pilih Kelompok'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                          {['Pilih Kelompok', 'Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
                             <option key={l} value={l}>{l}</option>
                           ))}
                         </select>
@@ -7548,7 +7555,7 @@ function DashboardContent() {
             <div className="p-2 bg-emerald-100 rounded-lg">
               <LayoutDashboard className="w-6 h-6" />
             </div>
-            <h1 className="text-xl font-black tracking-tight leading-none uppercase">Mosque<br/><span className="text-slate-400 text-[10px] font-bold tracking-[0.2em]">Management</span></h1>
+            <h1 className="text-xl font-black tracking-tight leading-none uppercase">Desa GND<br/><span className="text-slate-400 text-[10px] font-bold tracking-[0.2em]">Management</span></h1>
           </div>
         </div>
 
@@ -7613,7 +7620,7 @@ function DashboardContent() {
               <div className="p-6 border-b border-slate-50 flex items-center justify-between">
                 <div className="flex items-center gap-2 text-emerald-600">
                   <LayoutDashboard className="w-6 h-6" />
-                  <span className="font-black uppercase tracking-tight">Mosque</span>
+                  <span className="font-black uppercase tracking-tight">Desa GND</span>
                 </div>
                 <button onClick={() => setIsMobileMenuOpen(false)} className="p-2 text-slate-400">
                   <X className="w-6 h-6" />
