@@ -26,9 +26,23 @@ export async function saveData<T>(
   let effectiveSpreadsheetId = spreadsheetId || envSpreadsheetId || localStorage.getItem('app_spreadsheet_id') || '';
 
   const finalId = id || data.id || data.uid || Math.random().toString(36).substring(2, 11);
-  const itemToSave = { ...data, id: finalId };
 
-  // 1. Immediately update local persistent cache and clear memory cache to prevent ANY data loss
+  // 1. Merge with existing cached item to safeguard against data erasure on partial updates (e.g. isConfirmed)
+  let existingCachedItem: any = {};
+  try {
+    const cached = localStorage.getItem(`cache_${collectionName}`);
+    const items = cached ? JSON.parse(cached) : [];
+    const found = items.find((it: any) => String(it.id || it.uid) === String(finalId));
+    if (found) {
+      existingCachedItem = found;
+    }
+  } catch (err) {
+    console.warn('[Cache] Could not read local cache for merge:', err);
+  }
+
+  const itemToSave = { ...existingCachedItem, ...data, id: finalId };
+
+  // 2. Immediately update local persistent cache and clear memory cache to prevent ANY data loss
   clearSheetMemoryCache();
   try {
     const cached = localStorage.getItem(`cache_${collectionName}`);
@@ -57,13 +71,14 @@ export async function saveData<T>(
     }
   });
 
-  // 2. If Apps Script Web App URL is configured: Save directly without OAuth token!
+  // 3. If Apps Script Web App URL is configured: Save directly without OAuth token!
   const appsScriptUrl = getAppsScriptUrl();
   if (appsScriptUrl) {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
       await fetch(appsScriptUrl, {
         method: 'POST',
-        // text/plain avoids CORS preflight OPTIONS in Google Apps Script
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           action: 'save',
@@ -72,16 +87,19 @@ export async function saveData<T>(
           id: finalId,
           spreadsheetId: effectiveSpreadsheetId
         }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
       console.info(`[Sheets] Data '${collectionName}' berhasil disimpan via Apps Script (Bebas Token)!`);
       window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName } }));
       return finalId;
     } catch (scriptErr) {
-      console.warn('[Sheets] Gagal kirim ke Apps Script URL:', scriptErr);
+      console.warn('[Sheets] Gagal kirim ke Apps Script URL / Timeout, fallback ke cache lokal:', scriptErr);
+      return finalId;
     }
   }
 
-  // 3. Try to obtain active Google Access Token
+  // 4. Try to obtain active Google Access Token
   let effectiveAccessToken = await getOrRefreshAccessToken(accessToken);
 
   if (!effectiveAccessToken) {
@@ -131,7 +149,14 @@ export async function saveData<T>(
       if (idIndex !== -1) {
         const rowIndex = rows.findIndex((r, idx) => idx > 0 && String(r[idIndex]) === String(finalId));
         if (rowIndex !== -1) {
-          const rowValues = headers.map(h => cleanItem[h] ?? '');
+          const existingRowValues = rows[rowIndex] || [];
+          const rowValues = headers.map((h, colIdx) => {
+            const val = cleanItem[h];
+            if (val !== undefined && val !== null && val !== '') {
+              return val;
+            }
+            return existingRowValues[colIdx] !== undefined ? existingRowValues[colIdx] : '';
+          });
           await updateSheetValues(token, currentSpreadsheetId!, `${collectionName}!A${rowIndex + 1}`, [rowValues]);
           window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName } }));
           return finalId;

@@ -240,7 +240,11 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
   const [reason, setReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [lastSubmittedData, setLastSubmittedData] = useState<any | null>(null);
   const [showAlreadyAttended, setShowAlreadyAttended] = useState(false);
+  const [existingAttendance, setExistingAttendance] = useState<any | null>(null);
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   // QR Code Generator Modal State
   const [showQRModal, setShowQRModal] = useState(false);
@@ -257,6 +261,94 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
   const { data: jamaahList } = useDataQuery<Jamaah>('jamaah');
   const { data: attendanceList } = useDataQuery<Attendance>('attendance');
 
+  // Helper to check if a date string/timestamp corresponds to today
+  const checkIsToday = (rawDate: any): boolean => {
+    if (!rawDate) return false;
+    const now = new Date();
+    const yearNow = now.getFullYear();
+    const monthNow = now.getMonth();
+    const dateNow = now.getDate();
+
+    if (typeof rawDate === 'number') {
+      const d = new Date(rawDate);
+      return d.getFullYear() === yearNow && d.getMonth() === monthNow && d.getDate() === dateNow;
+    }
+
+    const str = String(rawDate).trim();
+    const num = Number(str);
+    if (!isNaN(num) && num > 1000000000) {
+      const d = new Date(num);
+      return d.getFullYear() === yearNow && d.getMonth() === monthNow && d.getDate() === dateNow;
+    }
+
+    const parsed = new Date(str);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.getFullYear() === yearNow && parsed.getMonth() === monthNow && parsed.getDate() === dateNow;
+    }
+
+    return false;
+  };
+
+  // Find if a jamaah has already attended today
+  const findExistingAttendanceToday = (jamaah: Jamaah | null) => {
+    if (!jamaah) return null;
+    const today = new Date();
+    const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    // 1. Check local session storage marker
+    const localKey1 = `attendance_done_${jamaah.id}_${todayKey}`;
+    const localKey2 = jamaah.memberId ? `attendance_done_${jamaah.memberId}_${todayKey}` : null;
+    const localMarker = localStorage.getItem(localKey1) || (localKey2 ? localStorage.getItem(localKey2) : null);
+    if (localMarker) {
+      try {
+        return JSON.parse(localMarker);
+      } catch {
+        return { 
+          jamaahName: jamaah.name, 
+          location: jamaah.location, 
+          date: Date.now(), 
+          sessionType: 'Kelompok', 
+          status: 'hadir',
+          time: 'Hari ini'
+        };
+      }
+    }
+
+    // 2. Check live attendance list
+    const matchInList = (attendanceList || []).find(a => {
+      const isSame = 
+        (a.jamaahId && (a.jamaahId === jamaah.id || a.jamaahId === jamaah.memberId)) ||
+        (a.memberId && (a.memberId === jamaah.id || a.memberId === jamaah.memberId)) ||
+        (a.jamaahName && jamaah.name && a.jamaahName.trim().toLowerCase() === jamaah.name.trim().toLowerCase());
+      return isSame && checkIsToday(a.date || (a as any).timestamp);
+    });
+    if (matchInList) return matchInList;
+
+    // 3. Check localStorage cache
+    try {
+      const cachedStr = localStorage.getItem('cache_attendance');
+      if (cachedStr) {
+        const cachedArr: any[] = JSON.parse(cachedStr);
+        const matchInCache = cachedArr.find(a => {
+          const isSame = 
+            (a.jamaahId && (a.jamaahId === jamaah.id || a.jamaahId === jamaah.memberId)) ||
+            (a.memberId && (a.memberId === jamaah.id || a.memberId === jamaah.memberId)) ||
+            (a.jamaahName && jamaah.name && a.jamaahName.trim().toLowerCase() === jamaah.name.trim().toLowerCase());
+          return isSame && checkIsToday(a.date || a.timestamp);
+        });
+        if (matchInCache) return matchInCache;
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  };
+
+  const selectedJamaahAlreadyAttended = useMemo(() => {
+    return findExistingAttendanceToday(selectedJamaah);
+  }, [selectedJamaah, attendanceList]);
+
   const filteredJamaah = useMemo(() => {
     if (!searchTerm || selectedJamaah) return [];
     return jamaahList.filter(j => {
@@ -268,6 +360,16 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
       return matchesSearch;
     }).slice(0, 5);
   }, [jamaahList, searchTerm, selectedJamaah, selectedLocation]);
+
+  const handleSelectJamaah = (j: Jamaah) => {
+    setSelectedJamaah(j);
+    setSearchTerm(j.name);
+    const existing = findExistingAttendanceToday(j);
+    if (existing) {
+      setExistingAttendance(existing);
+      setShowAlreadyAttended(true);
+    }
+  };
 
   const qrPayloadUrl = useMemo(() => {
     if (typeof window === 'undefined') return '';
@@ -356,56 +458,71 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
   };
 
   const handleSubmit = async () => {
-    if (!selectedJamaah) return;
+    if (!selectedJamaah || loading) return;
     
+    // 1. Enforce 1x attendance per day limit
+    const existing = findExistingAttendanceToday(selectedJamaah);
+    if (existing) {
+      setExistingAttendance(existing);
+      setShowAlreadyAttended(true);
+      showToast(`Jamaah ${selectedJamaah.name} sudah melakukan absensi hari ini!`, 'warning');
+      return;
+    }
+
     setLoading(true);
+    setErrorMessage('');
+
     try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const startOfDay = today.getTime();
-      
-      const nextDay = new Date(today);
-      nextDay.setDate(today.getDate() + 1);
-      const endOfDay = nextDay.getTime();
-
-      // Duplicate check against fetched attendance
-      const alreadyAttended = attendanceList.some(a => 
-        a.jamaahId === selectedJamaah.id && 
-        Number(a.date) >= startOfDay && 
-        Number(a.date) < endOfDay
-      );
-
-      if (alreadyAttended) {
-        setShowAlreadyAttended(true);
-        setLoading(false);
-        return;
-      }
-
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
       const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-      const dayName = days[new Date().getDay()];
+      const dayName = days[now.getDay()];
+      const timeStr = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 
-      const data = {
+      const newRecord = {
+        id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
         jamaahId: selectedJamaah.id,
+        memberId: selectedJamaah.memberId || '',
         jamaahName: selectedJamaah.name,
-        location: selectedJamaah.location,
-        category: selectedJamaah.category,
-        date: Date.now(),
+        location: selectedJamaah.location || selectedLocation || 'Kramat Batu',
+        category: selectedJamaah.category || 'UMUM',
+        date: now.getTime(),
+        timestamp: now.toISOString(),
+        time: timeStr,
         sessionType,
         day: dayName,
         status,
-        reason: status === 'izin' ? reason : ''
+        reason: status === 'izin' ? reason : '',
+        createdAt: now.toISOString()
       };
 
-      await saveData(null, accessToken, spreadsheetId, 'attendance', data);
+      // Mark in local storage immediately so double submission is locked instant-fast
+      localStorage.setItem(`attendance_done_${selectedJamaah.id}_${todayKey}`, JSON.stringify(newRecord));
+      if (selectedJamaah.memberId) {
+        localStorage.setItem(`attendance_done_${selectedJamaah.memberId}_${todayKey}`, JSON.stringify(newRecord));
+      }
+
+      // Save data with timeout protection (max 4.5 seconds)
+      const savePromise = saveData(null, accessToken, spreadsheetId, 'attendance', newRecord, newRecord.id);
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 4000));
+      
+      await Promise.race([savePromise, timeoutPromise]);
+
+      setLastSubmittedData(newRecord);
       setSuccess(true);
-      showToast('Data presensi berhasil disimpan!', 'success');
+      showToast('Alhamdulillah, data presensi berhasil dicatat!', 'success');
+
+      // Reset selection
       setSelectedJamaah(null);
       setSearchTerm('');
       setStatus('hadir');
       setReason('');
     } catch (error: any) {
-      console.error(error);
-      showToast(`Gagal mengirim absensi: ${error.message || 'Error tidak diketahui'}`, 'error');
+      console.error('[Attendance error]', error);
+      const msg = error?.message || 'Terjadi kendala saat menyimpan absensi.';
+      setErrorMessage(msg);
+      setShowErrorModal(true);
+      showToast(`Gagal: ${msg}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -425,18 +542,66 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
     return current ? current.sessions.join(', ') : 'Tidak ada jadwal rutin';
   };
 
-  if (success) {
+  if (success && lastSubmittedData) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
-        <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white p-10 rounded-[2.5rem] shadow-2xl max-w-sm w-full text-center border border-slate-100">
-          <div className="w-24 h-24 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-inner">
-            <CheckCircle2 className="w-12 h-12" />
+        <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-white p-8 sm:p-10 rounded-[2.5rem] shadow-2xl max-w-md w-full text-center border border-slate-100">
+          <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-inner">
+            <CheckCircle2 className="w-10 h-10" />
           </div>
-          <h2 className="text-3xl font-black text-slate-900 mb-3 tracking-tight">Sukses!</h2>
-          <p className="text-slate-500 mb-10 font-medium">Absensi Anda telah dicatat untuk pengajian hari ini.</p>
-          <div className="space-y-4">
-            <button onClick={() => setSuccess(false)} className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 active:scale-95">Absen Lagi</button>
-            <button onClick={onBack} className="w-full py-4 text-slate-400 font-bold hover:text-slate-600 transition-colors">Selesai & Keluar</button>
+          <h2 className="text-2xl sm:text-3xl font-black text-slate-900 mb-2 tracking-tight">Alhamdulillah, Sukses!</h2>
+          <p className="text-slate-500 mb-6 font-medium text-sm">Presensi sambung jamaah berhasil tercatat.</p>
+
+          <div className="bg-slate-50 border border-slate-200/70 rounded-2xl p-4 text-left mb-8 space-y-2 text-xs">
+            <div className="flex justify-between items-center py-1 border-b border-slate-100">
+              <span className="text-slate-500 font-semibold">Nama Jamaah:</span>
+              <span className="text-slate-900 font-black text-sm">{lastSubmittedData.jamaahName}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-slate-100">
+              <span className="text-slate-500 font-semibold">Kelompok:</span>
+              <span className="text-emerald-700 font-bold">{lastSubmittedData.location}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-slate-100">
+              <span className="text-slate-500 font-semibold">Sesi Pengajian:</span>
+              <span className="text-slate-800 font-bold">{lastSubmittedData.sessionType}</span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-slate-100">
+              <span className="text-slate-500 font-semibold">Status:</span>
+              <span className={cn(
+                "px-2.5 py-0.5 rounded-full font-black text-[11px]",
+                lastSubmittedData.status === 'izin' ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+              )}>
+                {lastSubmittedData.status === 'izin' ? 'Izin' : 'Hadir'}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-1">
+              <span className="text-slate-500 font-semibold">Waktu Tercatat:</span>
+              <span className="text-slate-700 font-bold">{lastSubmittedData.day}, {lastSubmittedData.time || 'WIB'}</span>
+            </div>
+            {lastSubmittedData.reason && (
+              <div className="pt-2 border-t border-slate-100 text-[11px]">
+                <span className="text-slate-500 font-semibold block mb-0.5">Alasan Izin:</span>
+                <span className="text-slate-700 italic">"{lastSubmittedData.reason}"</span>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-3">
+            <button 
+              onClick={() => {
+                setSuccess(false);
+                setLastSubmittedData(null);
+              }} 
+              className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 active:scale-95 text-sm"
+            >
+              Absen Jamaah Lain
+            </button>
+            <button 
+              onClick={onBack} 
+              className="w-full py-3.5 text-slate-400 font-bold hover:text-slate-600 transition-colors text-sm"
+            >
+              Selesai & Keluar
+            </button>
           </div>
         </motion.div>
       </div>
@@ -578,10 +743,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                       {filteredJamaah.map((j, idx) => (
                         <button
                           key={j.id ? `${j.id}-${idx}` : `search-j-${idx}`}
-                          onClick={() => {
-                            setSelectedJamaah(j);
-                            setSearchTerm(j.name);
-                          }}
+                          onClick={() => handleSelectJamaah(j)}
                           className="w-full px-6 py-4 text-left hover:bg-emerald-50 border-b border-slate-50 last:border-0 flex justify-between items-center group transition-colors"
                         >
                           <div>
@@ -602,15 +764,29 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               </div>
 
               {selectedJamaah && (
-                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="p-5 bg-emerald-600 rounded-[2rem] text-white shadow-xl shadow-emerald-200 relative overflow-hidden group">
-                  <CheckCircle2 className="absolute -right-4 -bottom-4 w-24 h-24 text-white/10 rotate-12 group-hover:scale-110 transition-transform duration-500" />
-                  <p className="text-[10px] font-black text-emerald-200 uppercase tracking-[0.2em] mb-2">Konfirmasi Identitas</p>
-                  <p className="font-black text-xl leading-tight">{selectedJamaah.name}</p>
-                  <div className="flex items-center gap-2 mt-3">
-                    <span className="px-2 py-1 rounded-lg bg-white/20 text-[9px] font-black uppercase backdrop-blur-sm">{selectedJamaah.category}</span>
-                    <span className="px-2 py-1 rounded-lg bg-white/20 text-[9px] font-black uppercase backdrop-blur-sm">{selectedJamaah.location}</span>
-                  </div>
-                </motion.div>
+                <div className="space-y-3">
+                  <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="p-5 bg-emerald-600 rounded-[2rem] text-white shadow-xl shadow-emerald-200 relative overflow-hidden group">
+                    <CheckCircle2 className="absolute -right-4 -bottom-4 w-24 h-24 text-white/10 rotate-12 group-hover:scale-110 transition-transform duration-500" />
+                    <p className="text-[10px] font-black text-emerald-200 uppercase tracking-[0.2em] mb-2">Konfirmasi Identitas</p>
+                    <p className="font-black text-xl leading-tight">{selectedJamaah.name}</p>
+                    <div className="flex items-center gap-2 mt-3">
+                      <span className="px-2 py-1 rounded-lg bg-white/20 text-[9px] font-black uppercase backdrop-blur-sm">{selectedJamaah.category}</span>
+                      <span className="px-2 py-1 rounded-lg bg-white/20 text-[9px] font-black uppercase backdrop-blur-sm">{selectedJamaah.location}</span>
+                    </div>
+                  </motion.div>
+
+                  {selectedJamaahAlreadyAttended && (
+                    <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 text-left">
+                      <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-black text-amber-900">Sudah Absen Hari Ini</p>
+                        <p className="text-[11px] text-amber-700 font-medium mt-0.5 leading-relaxed">
+                          Anda sudah tercatat melakukan absensi hari ini ({selectedJamaahAlreadyAttended.time || 'Tercatat'}, Sesi: {selectedJamaahAlreadyAttended.sessionType || 'Kelompok'} - {selectedJamaahAlreadyAttended.status === 'izin' ? 'Izin' : 'Hadir'}). Absensi hanya berlaku 1x per hari.
+                        </p>
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
               )}
 
               <div className="space-y-3">
@@ -668,12 +844,12 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               )}
 
               <button
-                disabled={!selectedJamaah || loading}
+                disabled={!selectedJamaah || loading || Boolean(selectedJamaahAlreadyAttended)}
                 onClick={handleSubmit}
                 className={cn(
                   "w-full py-5 rounded-[2rem] font-black uppercase tracking-[0.2em] text-white transition-all shadow-xl",
-                  !selectedJamaah || loading 
-                    ? "bg-slate-200 cursor-not-allowed shadow-none" 
+                  !selectedJamaah || loading || Boolean(selectedJamaahAlreadyAttended)
+                    ? "bg-slate-300 cursor-not-allowed shadow-none" 
                     : "bg-emerald-600 hover:bg-emerald-700 active:scale-95 shadow-emerald-200"
                 )}
               >
@@ -682,7 +858,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                     <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
                     Memproses...
                   </div>
-                ) : "Kirim Absensi"}
+                ) : selectedJamaahAlreadyAttended ? "Sudah Absen Hari Ini" : "Kirim Absensi"}
               </button>
             </motion.div>
           )}
@@ -839,20 +1015,79 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
             <motion.div 
               initial={{ scale: 0.9, y: 20 }} 
               animate={{ scale: 1, y: 0 }} 
-              className="bg-white rounded-[2.5rem] p-10 max-w-sm w-full text-center shadow-2xl border border-slate-100"
+              className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full text-center shadow-2xl border border-slate-100"
             >
-              <div className="w-24 h-24 bg-amber-100 text-amber-600 rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-inner">
-                <AlertCircle className="w-12 h-12" />
+              <div className="w-20 h-20 bg-amber-100 text-amber-600 rounded-3xl flex items-center justify-center mx-auto mb-5 shadow-inner">
+                <AlertCircle className="w-10 h-10" />
               </div>
-              <h2 className="text-2xl font-black text-slate-900 mb-4 tracking-tight leading-tight">Sudah Melakukan Absensi</h2>
-              <p className="text-slate-500 mb-10 font-medium leading-relaxed">
-                Anda sudah tercatat melakukan absensi hari ini. Jika ada perubahan data, mohon hubungi <span className="font-black text-slate-900">pengurus kelompok</span> Anda.
+              <h2 className="text-xl font-black text-slate-900 mb-2 tracking-tight leading-tight">Sudah Melakukan Absensi</h2>
+              <p className="text-slate-500 mb-5 font-medium text-xs leading-relaxed">
+                Presensi sambung jamaah hanya dapat dilakukan <span className="font-black text-slate-800">1 kali per hari</span>.
+              </p>
+
+              {(existingAttendance || selectedJamaah) && (
+                <div className="bg-amber-50/70 border border-amber-200/80 rounded-2xl p-3.5 text-left mb-6 space-y-1.5 text-xs">
+                  <div className="flex justify-between items-center">
+                    <span className="text-amber-800 font-semibold text-[11px]">Nama:</span>
+                    <span className="text-slate-900 font-black">{existingAttendance?.jamaahName || selectedJamaah?.name}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-amber-800 font-semibold text-[11px]">Kelompok:</span>
+                    <span className="text-slate-800 font-bold">{existingAttendance?.location || selectedJamaah?.location || selectedLocation}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-amber-800 font-semibold text-[11px]">Sesi:</span>
+                    <span className="text-slate-800 font-bold">{existingAttendance?.sessionType || sessionType || 'Kelompok'}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-amber-800 font-semibold text-[11px]">Status:</span>
+                    <span className="px-2 py-0.5 rounded-full font-black text-[10px] bg-amber-200 text-amber-900">
+                      {existingAttendance?.status === 'izin' ? 'Izin' : 'Hadir'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-amber-800 font-semibold text-[11px]">Waktu:</span>
+                    <span className="text-slate-700 font-medium">{existingAttendance?.time || 'Hari ini'}</span>
+                  </div>
+                </div>
+              )}
+
+              <button 
+                onClick={() => {
+                  setShowAlreadyAttended(false);
+                }} 
+                className="w-full py-3.5 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200 text-xs"
+              >
+                Mengerti & Tutup
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {showErrorModal && (
+          <motion.div 
+            initial={{ opacity: 0 }} 
+            animate={{ opacity: 1 }} 
+            exit={{ opacity: 0 }} 
+            className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 z-[100]"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }} 
+              animate={{ scale: 1, y: 0 }} 
+              className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full text-center shadow-2xl border border-slate-100"
+            >
+              <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-3xl flex items-center justify-center mx-auto mb-5 shadow-inner">
+                <X className="w-10 h-10" />
+              </div>
+              <h2 className="text-xl font-black text-slate-900 mb-2 tracking-tight leading-tight">Gagal Mengirim Absensi</h2>
+              <p className="text-slate-500 mb-6 font-medium text-xs leading-relaxed">
+                {errorMessage || 'Terjadi kendala jaringan saat memproses absensi. Silakan coba kembali.'}
               </p>
               <button 
-                onClick={() => setShowAlreadyAttended(false)} 
-                className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200"
+                onClick={() => setShowErrorModal(false)} 
+                className="w-full py-3.5 bg-rose-600 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-rose-700 transition-all active:scale-95 shadow-xl shadow-rose-200 text-xs"
               >
-                Tutup
+                Tutup & Coba Lagi
               </button>
             </motion.div>
           </motion.div>
@@ -861,6 +1096,25 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
     </div>
   );
 }
+
+// --- Shared Constants ---
+const LOCATION_PREFIXES: Record<string, string> = {
+  'Kramat Batu': 'KB',
+  'Karya Utama': 'KU',
+  'Radio Dalam': 'RD',
+  'Cipete': 'CP',
+  'Antena': 'AN'
+};
+
+const DAPUKAN_OPTIONS = [
+  "Ides", "Wides", "Koor. Lupg", "Bosdes", "Mubdes", "Tim Aghniya'", "Ku Des", 
+  "Tim Bk", "Tim Bacaan", "Tim Basyiron Wa Nadziron", "Tim Benda Sb", "Tim DhuaFa'", 
+  "Tim Faraoid", "Tim Gambuh", "Tim Haji", "Tim Keluarga Bahagia", "Tim Kematian", 
+  "Tim Manula", "Tim Mondar Mandir", "Tim Muballigh", "Tim Organisasi", 
+  "Tim Pembangunan", "Tim Pkw", "Tim Penyelesaian", "Tim Pramuka", "Tim Sarjana", 
+  "Tim Ub", "Tim Zakat", "Tim Cai & Remaja (Karemdes)", "Keputrian Des", 
+  "Ikel", "Wikel", "Pjkbm", "Boskel", "Mubkel", "Ku Kel", "Pakar Pendidik", "Ptk", "Keputkel"
+];
 
 // --- Public Jamaah Self-Registration View ---
 function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () => void, spreadsheetId?: string }) {
@@ -933,7 +1187,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
   }, [tokenData?.expiresAt, currentTime]);
 
   // Form State
-  const [activeStep, setActiveStep] = useState<'identitas' | 'keluarga' | 'keilmuan'>('identitas');
+  const [activeTab, setActiveTab] = useState<'identitas' | 'keluarga' | 'pendidikan' | 'dapukan' | 'keilmuan'>('identitas');
   const [selectedLocation, setSelectedLocation] = useState<MosqueLocation>(() => {
     if (tokenData?.location && tokenData.location !== 'Seluruh Lokasi') {
       return tokenData.location as MosqueLocation;
@@ -946,6 +1200,9 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
   const [kkSearchTerm, setKkSearchTerm] = useState<string>('');
   const [isKkDropdownOpen, setIsKkDropdownOpen] = useState<boolean>(false);
   const [base64Photo, setBase64Photo] = useState<string | null>(null);
+  const [selectedDapukan, setSelectedDapukan] = useState<string[]>([]);
+  const [dapukanFilter, setDapukanFilter] = useState('');
+  const [hasHajjStatus, setHasHajjStatus] = useState<string>('Belum');
   const [isSaving, setIsSaving] = useState(false);
   const [registeredResult, setRegisteredResult] = useState<{
     memberId: string;
@@ -967,10 +1224,11 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
     if (!kkSearchTerm.trim()) return headsOfFamily;
     const term = kkSearchTerm.toLowerCase();
     return headsOfFamily.filter(k => 
-      (k.name && k.name.toLowerCase().includes(term)) ||
-      (k.nickname && k.nickname.toLowerCase().includes(term)) ||
-      (k.memberId && k.memberId.toLowerCase().includes(term)) ||
-      (k.phone && k.phone.includes(term))
+      String(k.name || '').toLowerCase().includes(term) ||
+      String(k.nickname || '').toLowerCase().includes(term) ||
+      String(k.memberId || '').toLowerCase().includes(term) ||
+      String(k.phone || '').includes(term) ||
+      String(k.location || '').toLowerCase().includes(term)
     );
   }, [headsOfFamily, kkSearchTerm]);
 
@@ -1000,20 +1258,20 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
     const formData = new FormData(e.currentTarget);
     const nameVal = (formData.get('name') as string || '').trim();
     if (!nameVal) {
-      setActiveStep('identitas');
+      setActiveTab('identitas');
       showToast('Nama lengkap wajib diisi.', 'error');
       return;
     }
 
     const phoneVal = (formData.get('phone') as string || '').trim();
     if (!phoneVal) {
-      setActiveStep('identitas');
+      setActiveTab('identitas');
       showToast('Nomor telepon / WA wajib diisi.', 'error');
       return;
     }
 
     if (!isKK && !selectedKKId) {
-      setActiveStep('keluarga');
+      setActiveTab('identitas');
       showToast('Silakan pilih Kepala Keluarga terlebih dahulu.', 'error');
       return;
     }
@@ -1059,7 +1317,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
       memberId,
       name: nameVal,
       nickname: (formData.get('nickname') as string) || '',
-      gender: (formData.get('gender') as string) || 'Laki-laki',
+      gender: (formData.get('gender') as string) || '',
       bloodType: (formData.get('bloodType') as string) || '',
       originAddress,
       currentAddress,
@@ -1070,8 +1328,8 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
       isKK,
       kkId: finalKKId,
       familyOrder,
-      dapukan: [],
-      positions: [],
+      dapukan: selectedDapukan,
+      positions: selectedDapukan,
       photoUrl: base64Photo || undefined,
       registeredAt: Date.now(),
       placeOfBirth: (formData.get('placeOfBirth') as string) || '',
@@ -1084,14 +1342,15 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
       schoolOrUniversity: (formData.get('schoolOrUniversity') as string) || '',
       currentJob: (formData.get('currentJob') as string) || '',
       workplaceAddress: (formData.get('workplaceAddress') as string) || '',
-      maritalStatus: (formData.get('maritalStatus') as string) || 'Belum Menikah',
+      maritalStatus: (formData.get('maritalStatus') as string) || '',
       marriageYear: (formData.get('marriageYear') as string) || '',
       spouseName: (formData.get('spouseName') as string) || '',
-      hasJurusKeras: (formData.get('hasJurusKeras') as string) || 'Belum',
-      hasJurusHalus: (formData.get('hasJurusHalus') as string) || 'Belum',
-      hasUbShares: (formData.get('hasUbShares') as string) || 'Tidak',
-      isMubaligh: (formData.get('isMubaligh') as string) || 'Bukan',
-      hasHajj: (formData.get('hasHajj') as string) || 'Belum',
+      hasJurusKeras: (formData.get('hasJurusKeras') as string) || '',
+      hasJurusHalus: (formData.get('hasJurusHalus') as string) || '',
+      hasUbShares: (formData.get('hasUbShares') as string) || '',
+      previousDapukan: (formData.get('previousDapukan') as string) || '',
+      isMubaligh: (formData.get('isMubaligh') as string) || '',
+      hasHajj: hasHajjStatus || (formData.get('hasHajj') as string) || '',
       hajjPortionNumber: (formData.get('hajjPortionNumber') as string) || '',
       plannedHajjYear: (formData.get('plannedHajjYear') as string) || '',
       hajjName: (formData.get('hajjName') as string) || '',
@@ -1101,7 +1360,10 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
 
     setIsSaving(true);
     try {
-      await saveData(null, accessToken, spreadsheetId, 'jamaah', newJamaahData, newJamaahData.id);
+      const savePromise = saveData(null, accessToken, spreadsheetId, 'jamaah', newJamaahData, newJamaahData.id);
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 4500));
+      await Promise.race([savePromise, timeoutPromise]);
+
       showToast(`Alhamdulillah! Data jamaah ${nameVal} berhasil didaftarkan.`, 'success');
       setRegisteredResult({
         memberId,
@@ -1130,7 +1392,9 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
     }
     setRegisteredResult(null);
     setBase64Photo(null);
-    setActiveStep('identitas');
+    setSelectedDapukan([]);
+    setHasHajjStatus('Belum');
+    setActiveTab('identitas');
   };
 
   // 1. EXPIRED LINK SCREEN
@@ -1274,11 +1538,11 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
   const isLocationLocked = Boolean(tokenData?.location && tokenData.location !== 'Seluruh Lokasi');
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 py-8 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-slate-900 text-slate-100 py-6 sm:py-10 px-3 sm:px-6 lg:px-8">
       <div className="max-w-3xl mx-auto">
         {/* Top Header Card */}
-        <div className="bg-slate-800/90 border border-slate-700/80 backdrop-blur-xl rounded-[2.5rem] p-6 sm:p-8 mb-8 shadow-2xl">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-700/60 pb-6 mb-6">
+        <div className="bg-slate-800/90 border border-slate-700/80 backdrop-blur-xl rounded-[2.5rem] p-5 sm:p-8 mb-6 shadow-2xl">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-700/60 pb-5 mb-5">
             <div className="flex items-center gap-3.5">
               <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-bold shadow-inner">
                 <Users className="w-6 h-6" />
@@ -1286,7 +1550,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
               <div>
                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400">Pendaftaran Mandiri Jamaah</span>
                 <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">Formulir Data Jamaah</h1>
-                <p className="text-xs text-slate-400">Desa Gandaria • Tanpa Perlu Login</p>
+                <p className="text-xs text-slate-400">Desa Gandaria • Terhubung Google Sheets</p>
               </div>
             </div>
 
@@ -1329,204 +1593,246 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
         </div>
 
         {/* Main Form Box */}
-        <div className="bg-white text-slate-900 rounded-[2.5rem] p-6 sm:p-10 shadow-2xl border border-slate-100">
-          {/* Step Tabs Navigation */}
-          <div className="flex border-b border-slate-100 mb-8 overflow-x-auto gap-2 sm:gap-4 pb-2">
+        <div className="bg-white text-slate-900 rounded-[2.5rem] p-5 sm:p-8 shadow-2xl border border-slate-100">
+          {/* Step Tabs Navigation - 5 Complete Tabs */}
+          <div className="flex border-b border-slate-100 gap-1 sm:gap-2 overflow-x-auto pb-3 mb-6 scrollbar-none">
             {[
-              { id: 'identitas', label: '1. Identitas Diri', icon: Users },
-              { id: 'keluarga', label: '2. Keluarga & Domisili', icon: Home },
-              { id: 'keilmuan', label: '3. Keilmuan & Ibadah', icon: HeartPulse }
+              { id: 'identitas', label: '1. Identitas & Kontak', icon: Users },
+              { id: 'keluarga', label: '2. Orang Tua & Keluarga', icon: Home },
+              { id: 'pendidikan', label: '3. Pendidikan & Pekerjaan', icon: GraduationCap },
+              { id: 'dapukan', label: '4. Dapukan (Checklist)', icon: ClipboardList },
+              { id: 'keilmuan', label: '5. Keilmuan, Haji & Kesehatan', icon: HeartPulse }
             ].map(tab => (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveStep(tab.id as any)}
+                onClick={() => setActiveTab(tab.id as any)}
                 className={cn(
-                  "px-4 py-3 rounded-2xl font-bold text-xs sm:text-sm flex items-center gap-2 whitespace-nowrap transition-all",
-                  activeStep === tab.id
-                    ? "bg-emerald-600 text-white shadow-lg shadow-emerald-200"
-                    : "text-slate-500 hover:bg-slate-100"
+                  "px-3.5 py-2.5 rounded-2xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 shrink-0",
+                  activeTab === tab.id
+                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-200"
+                    : "bg-slate-50 text-slate-600 hover:bg-slate-100"
                 )}
               >
-                <tab.icon className="w-4 h-4" />
+                <tab.icon className="w-3.5 h-3.5" />
                 <span>{tab.label}</span>
               </button>
             ))}
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* STEP 1: IDENTITAS DIRI */}
-            {activeStep === 'identitas' && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                <div className="p-4 bg-emerald-50/60 rounded-2xl border border-emerald-100/80 mb-4">
-                  <h3 className="font-black text-emerald-900 text-sm mb-0.5">Data Pribadi Jamaah</h3>
-                  <p className="text-xs text-emerald-700 font-medium">Mohon isi identitas diri sesuai data KTP / Kartu Keluarga</p>
-                </div>
-
-                {/* Upload Foto Profil */}
-                <div className="flex items-center gap-5 p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
-                  <div className="w-20 h-20 rounded-2xl bg-white border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden relative shadow-sm">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* TAB 1: IDENTITAS & KONTAK */}
+            <div className={cn("space-y-4", activeTab === 'identitas' ? 'block' : 'hidden')}>
+              {/* Upload Foto */}
+              <div className="flex justify-center mb-4">
+                <label className="relative group cursor-pointer">
+                  <div className="w-24 h-24 rounded-full bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden transition-all group-hover:border-emerald-500 shadow-inner">
                     {base64Photo ? (
                       <img src={base64Photo} alt="Foto Profil" className="w-full h-full object-cover" />
                     ) : (
-                      <Users className="w-8 h-8 text-slate-300" />
+                      <Plus className="w-8 h-8 text-slate-400 group-hover:text-emerald-500" />
                     )}
                   </div>
-                  <div className="flex-1">
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Pas Foto (Opsional)</label>
-                    <label className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all cursor-pointer shadow-sm">
-                      <ImageIcon className="w-4 h-4" />
-                      <span>{base64Photo ? 'Ganti Foto' : 'Pilih Foto'}</span>
-                      <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
-                    </label>
-                    {base64Photo && (
-                      <button
-                        type="button"
-                        onClick={() => setBase64Photo(null)}
-                        className="ml-2 text-xs text-red-500 font-semibold hover:underline"
-                      >
-                        Hapus
-                      </button>
-                    )}
-                    <p className="text-[11px] text-slate-400 mt-1">Format JPG, PNG maksimal 2MB</p>
+                  <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
+                  <div className="absolute -bottom-1 -right-1 bg-emerald-600 text-white p-1.5 rounded-full shadow-lg">
+                    <Plus className="w-3.5 h-3.5" />
                   </div>
-                </div>
+                </label>
+              </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Nama Lengkap <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      name="name"
-                      required
-                      placeholder="Contoh: Muhammad Fulan"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Panggilan / Akrab</label>
-                    <input
-                      name="nickname"
-                      placeholder="Contoh: Fulan"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      No. Telepon / WhatsApp <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      name="phone"
-                      type="tel"
-                      required
-                      placeholder="Contoh: 081234567890"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Jenis Kelamin</label>
-                    <select
-                      name="gender"
-                      defaultValue="Laki-laki"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="Laki-laki">Laki-laki</option>
-                      <option value="Perempuan">Perempuan</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Golongan Darah</label>
-                    <select
-                      name="bloodType"
-                      defaultValue="Belum Tahu"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="Belum Tahu">Belum Tahu</option>
-                      <option value="A">A</option>
-                      <option value="B">B</option>
-                      <option value="AB">AB</option>
-                      <option value="O">O</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Tempat Lahir</label>
-                    <input
-                      name="placeOfBirth"
-                      placeholder="Kota Tempat Lahir"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Tanggal Lahir</label>
-                    <input
-                      name="dateOfBirth"
-                      type="date"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Pekerjaan / Profesi</label>
-                    <input
-                      name="currentJob"
-                      placeholder="Contoh: Karyawan Swasta, Wiraswasta, Pelajar"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Pendidikan Terakhir</label>
-                    <select
-                      name="lastEducation"
-                      defaultValue="SMA/SMK"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="SD">SD / Sederajat</option>
-                      <option value="SMP">SMP / MTs</option>
-                      <option value="SMA/SMK">SMA / SMK / MA</option>
-                      <option value="D3">Diploma (D3)</option>
-                      <option value="S1">Sarjana (S1)</option>
-                      <option value="S2">Magister (S2)</option>
-                      <option value="S3">Doktor (S3)</option>
-                      <option value="Lainnya">Lainnya</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-4">
-                  <button
-                    type="button"
-                    onClick={() => setActiveStep('keluarga')}
-                    className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all flex items-center gap-2"
-                  >
-                    <span>Lanjut ke Data Keluarga</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-
-            {/* STEP 2: KELUARGA & DOMISILI */}
-            {activeStep === 'keluarga' && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                <div className="p-4 bg-blue-50/60 rounded-2xl border border-blue-100/80 mb-4">
-                  <h3 className="font-black text-blue-900 text-sm mb-0.5">Struktur Keluarga & Tempat Tinggal</h3>
-                  <p className="text-xs text-blue-700 font-medium">Tentukan status Kepala Keluarga dan kelompok jamaah Anda</p>
-                </div>
-
-                {/* Lokasi Kelompok Masjid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Kelompok Masjid</label>
-                  <select
-                    name="location"
-                    value={selectedLocation}
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nama Lengkap <span className="text-rose-500">*</span></label>
+                  <input name="name" required placeholder="Contoh: Muhammad Fulan" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nama Panggilan</label>
+                  <input name="nickname" placeholder="Contoh: Budi" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Tempat Lahir</label>
+                  <input name="placeOfBirth" placeholder="Contoh: Jakarta" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Tanggal Lahir</label>
+                  <input type="date" name="dateOfBirth" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Jenis Kelamin</label>
+                  <select name="gender" defaultValue="Laki-laki" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="Laki-laki">Laki-laki</option>
+                    <option value="Perempuan">Perempuan</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Golongan Darah</label>
+                  <select name="bloodType" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Golongan Darah...</option>
+                    <option value="A">A</option>
+                    <option value="B">B</option>
+                    <option value="AB">AB</option>
+                    <option value="O">O</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Telepon / WA <span className="text-rose-500">*</span></label>
+                  <input type="tel" name="phone" required placeholder="Contoh: 08123456789" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+              </div>
+
+              {/* Status KK */}
+              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                <input 
+                  type="checkbox" 
+                  id="pubIsKK" 
+                  checked={isKK} 
+                  onChange={(e) => {
+                    setIsKK(e.target.checked);
+                    if (e.target.checked) {
+                      setSelectedKKId('');
+                      setKkSearchTerm('');
+                    }
+                  }}
+                  className="w-4 h-4 text-emerald-600 rounded"
+                />
+                <label htmlFor="pubIsKK" className="text-sm font-semibold text-slate-700 cursor-pointer">
+                  Kepala Keluarga (KK)
+                </label>
+              </div>
+
+              {/* Selector KK jika bukan Kepala Keluarga */}
+              {!isKK && (
+                <div className="relative">
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Pilih Kepala Keluarga (KK) <span className="text-rose-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <div className="relative flex items-center">
+                      <Search className="absolute left-3.5 w-4 h-4 text-slate-400 pointer-events-none" />
+                      <input 
+                        type="text"
+                        placeholder="Cari KK berdasarkan Nama, ID, atau Telepon..."
+                        value={kkSearchTerm}
+                        onChange={(e) => {
+                          setKkSearchTerm(e.target.value);
+                          setIsKkDropdownOpen(true);
+                        }}
+                        onFocus={() => setIsKkDropdownOpen(true)}
+                        className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white font-medium"
+                      />
+                      {selectedKKId ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedKKId('');
+                            setKkSearchTerm('');
+                          }}
+                          className="absolute right-3 p-1 text-slate-400 hover:text-rose-500 rounded-md transition-colors"
+                          title="Hapus pilihan KK"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      ) : (
+                        <ChevronDown 
+                          className="absolute right-3 w-4 h-4 text-slate-400 cursor-pointer"
+                          onClick={() => setIsKkDropdownOpen(prev => !prev)}
+                        />
+                      )}
+                    </div>
+
+                    {selectedKKId && (
+                      <div className="mt-1.5 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between">
+                        {(() => {
+                          const currKK = headsOfFamily.find(k => k.memberId === selectedKKId);
+                          return (
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span className="px-2 py-0.5 rounded bg-emerald-600 text-white font-mono font-black text-xs shrink-0">{selectedKKId}</span>
+                              <span className="text-xs font-bold text-emerald-950 truncate">{currKK?.name || 'Kepala Keluarga Terpilih'}</span>
+                              {currKK?.location && (
+                                <span className="text-[10px] text-emerald-700 bg-emerald-100/80 px-1.5 py-0.5 rounded font-bold shrink-0">{currKK.location}</span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        <span className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider shrink-0 ml-2">KK Aktif</span>
+                      </div>
+                    )}
+
+                    {isKkDropdownOpen && (
+                      <>
+                        <div 
+                          className="fixed inset-0 z-40" 
+                          onClick={() => setIsKkDropdownOpen(false)}
+                        />
+                        <div className="absolute z-50 w-full mt-1.5 bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden max-h-60 overflow-y-auto divide-y divide-slate-100">
+                          {filteredKKList.length === 0 ? (
+                            <div className="p-4 text-center text-xs text-slate-400 italic">
+                              Tidak ada Kepala Keluarga di {selectedLocation} yang cocok
+                            </div>
+                          ) : (
+                            filteredKKList.map((kk, kkIdx) => (
+                              <button
+                                key={kk.id ? `${kk.id}-${kkIdx}` : `kk-search-${kkIdx}`}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedKKId(kk.memberId);
+                                  setKkSearchTerm(`${kk.memberId} - ${kk.name}`);
+                                  setIsKkDropdownOpen(false);
+                                }}
+                                className={cn(
+                                  "w-full px-4 py-2.5 text-left hover:bg-slate-50 transition-colors flex items-center justify-between gap-2",
+                                  selectedKKId === kk.memberId ? "bg-emerald-50/70 text-emerald-950 font-bold" : "text-slate-800"
+                                )}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-black text-xs shrink-0">
+                                    {kk.name.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-xs truncate flex items-center gap-1.5">
+                                      <span>{kk.name}</span>
+                                      {kk.nickname && <span className="text-slate-400 font-normal">({kk.nickname})</span>}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 font-mono font-medium">{kk.memberId} {kk.phone ? `• ${kk.phone}` : ''}</div>
+                                  </div>
+                                </div>
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-100 font-bold text-slate-600 shrink-0">
+                                  {kk.location}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
+                  <select name="category" defaultValue="UMUM" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="UMUM">UMUM</option>
+                    <option value="GPN">GPN (Generus Pra Nikah)</option>
+                    <option value="APR">APR (Anak Pra Remaja)</option>
+                    <option value="ACR">ACR (Anak Caberawit)</option>
+                    <option value="DUDA">DUDA</option>
+                    <option value="JANDA">JANDA</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Masjid</label>
+                  <select 
+                    name="location" 
+                    value={selectedLocation} 
                     onChange={(e) => {
                       setSelectedLocation(e.target.value as MosqueLocation);
                       setSelectedKKId('');
@@ -1534,7 +1840,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                     }}
                     disabled={isLocationLocked}
                     className={cn(
-                      "w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white",
+                      "w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium",
                       isLocationLocked && "bg-slate-100 cursor-not-allowed opacity-80"
                     )}
                   >
@@ -1542,319 +1848,312 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                       <option key={l} value={l}>{l}</option>
                     ))}
                   </select>
-                  {isLocationLocked && (
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      Lokasi kelompok telah ditentukan dari tautan pendaftaran.
-                    </p>
-                  )}
                 </div>
+              </div>
 
-                {/* Status KK Selection */}
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-3">
-                  <label className="block text-xs font-bold text-slate-800">Apakah Anda Kepala Keluarga (KK)?</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsKK(true);
-                        setSelectedKKId('');
-                        setKkSearchTerm('');
-                      }}
-                      className={cn(
-                        "p-4 rounded-xl border text-left transition-all",
-                        isKK
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500"
-                          : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"
-                      )}
-                    >
-                      <p className="font-black text-sm">👨‍👩‍👧‍👦 Ya, Kepala Keluarga</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">Akan dibuatkan nomor induk KK baru</p>
-                    </button>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Asal</label>
+                <textarea name="originAddress" rows={2} placeholder="Alamat asal/daerah..." className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setIsKK(false)}
-                      className={cn(
-                        "p-4 rounded-xl border text-left transition-all",
-                        !isKK
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500"
-                          : "bg-white border-slate-200 text-slate-600 hover:bg-slate-100"
-                      )}
-                    >
-                      <p className="font-black text-sm">👤 Bukan (Anggota Keluarga)</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">Istri, Anak, atau Famili dari KK yang ada</p>
-                    </button>
-                  </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Saat Ini</label>
+                <textarea name="currentAddress" rows={2} placeholder="Alamat tinggal sekarang..." className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div className="pt-3 flex justify-end">
+                <button type="button" onClick={() => setActiveTab('keluarga')} className="px-6 py-2.5 rounded-xl bg-slate-900 text-white font-semibold text-xs hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-sm">
+                  <span>Lanjut: Orang Tua & Keluarga</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* TAB 2: ORANG TUA & KELUARGA */}
+            <div className={cn("space-y-4", activeTab === 'keluarga' ? 'block' : 'hidden')}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ayah</label>
+                  <input name="fatherName" placeholder="Nama Ayah Kandung" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
                 </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ibu</label>
+                  <input name="motherName" placeholder="Nama Ibu Kandung" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+              </div>
 
-                {/* Searchable KK Selector if NOT KK */}
-                {!isKK && (
-                  <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-2">
-                    <label className="block text-xs font-bold text-amber-900">
-                      Pilih Kepala Keluarga Anda ({selectedLocation}) <span className="text-red-500">*</span>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Ortu yang Bisa Dihubungi</label>
+                <input type="tel" name="parentPhone" placeholder="No. Telepon / WA Orang Tua" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
+                  <select name="maritalStatus" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Status...</option>
+                    <option value="Muda Mudi">Muda Mudi</option>
+                    <option value="Nikah">Nikah</option>
+                    <option value="Janda">Janda</option>
+                    <option value="Duda">Duda</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Tahun Nikah</label>
+                  <input name="marriageYear" placeholder="Contoh: 2018" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Nama Suami / Istri</label>
+                <input name="spouseName" placeholder="Nama Suami atau Istri" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div className="pt-3 flex justify-between">
+                <button type="button" onClick={() => setActiveTab('identitas')} className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-semibold text-xs hover:bg-slate-50 transition-all flex items-center gap-1.5">
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Kembali</span>
+                </button>
+                <button type="button" onClick={() => setActiveTab('pendidikan')} className="px-6 py-2.5 rounded-xl bg-slate-900 text-white font-semibold text-xs hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-sm">
+                  <span>Lanjut: Pendidikan & Kerja</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* TAB 3: PENDIDIKAN & PEKERJAAN */}
+            <div className={cn("space-y-4", activeTab === 'pendidikan' ? 'block' : 'hidden')}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Pendidikan Terakhir</label>
+                  <select name="lastEducation" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Pendidikan...</option>
+                    <option value="SD">SD</option>
+                    <option value="SMP">SMP</option>
+                    <option value="SMA">SMA</option>
+                    <option value="D1">D1</option>
+                    <option value="D2">D2</option>
+                    <option value="D3">D3</option>
+                    <option value="S1">S1</option>
+                    <option value="S2">S2</option>
+                    <option value="S3">S3</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Kelas / Jurusan</label>
+                  <input name="majorOrClass" placeholder="Contoh: Teknik Informatika / XII IPA" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Nama Sekolah / Universitas</label>
+                <input name="schoolOrUniversity" placeholder="Contoh: Universitas Indonesia" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Pekerjaan Saat Ini</label>
+                <input name="currentJob" placeholder="Contoh: Karyawan Swasta / PNS" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Tempat Kerja</label>
+                <textarea name="workplaceAddress" rows={2} placeholder="Alamat kantor/perusahaan..." className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div className="pt-3 flex justify-between">
+                <button type="button" onClick={() => setActiveTab('keluarga')} className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-semibold text-xs hover:bg-slate-50 transition-all flex items-center gap-1.5">
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Kembali</span>
+                </button>
+                <button type="button" onClick={() => setActiveTab('dapukan')} className="px-6 py-2.5 rounded-xl bg-slate-900 text-white font-semibold text-xs hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-sm">
+                  <span>Lanjut: Dapukan (Checklist)</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* TAB 4: DAPUKAN (CHECKLIST MULTI-SELECT) */}
+            <div className={cn("space-y-4", activeTab === 'dapukan' ? 'block' : 'hidden')}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-emerald-50 p-3.5 rounded-2xl border border-emerald-100">
+                <div>
+                  <h4 className="font-bold text-emerald-800 text-sm">Pilih Dapukan (Tugas Sabilillah)</h4>
+                  <p className="text-xs text-emerald-600">Centang dapukan yang diampu oleh jamaah. ({selectedDapukan.length} dipilih)</p>
+                </div>
+                <input 
+                  type="text"
+                  placeholder="Cari dapukan..."
+                  value={dapukanFilter}
+                  onChange={(e) => setDapukanFilter(e.target.value)}
+                  className="px-3 py-1.5 rounded-xl border border-emerald-200 text-xs outline-none bg-white font-medium"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 p-3 bg-slate-50 rounded-2xl border border-slate-100 max-h-64 overflow-y-auto">
+                {DAPUKAN_OPTIONS.filter(d => d.toLowerCase().includes(dapukanFilter.toLowerCase())).map((pos, posIdx) => {
+                  const isChecked = selectedDapukan.includes(pos);
+                  return (
+                    <label key={`${pos}-${posIdx}`} className={cn(
+                      "flex items-center gap-2.5 p-2 rounded-xl border transition-all cursor-pointer text-xs font-medium",
+                      isChecked 
+                        ? "bg-emerald-50 border-emerald-500 text-emerald-900 font-bold shadow-sm" 
+                        : "bg-white border-slate-200 text-slate-700 hover:border-slate-300"
+                    )}>
+                      <input 
+                        type="checkbox" 
+                        checked={isChecked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedDapukan([...selectedDapukan, pos]);
+                          } else {
+                            setSelectedDapukan(selectedDapukan.filter(p => p !== pos));
+                          }
+                        }}
+                        className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span className="truncate">{pos}</span>
                     </label>
+                  );
+                })}
+              </div>
 
-                    <div className="relative">
-                      <div className="relative">
-                        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <input
-                          type="text"
-                          value={kkSearchTerm}
-                          onChange={(e) => {
-                            setKkSearchTerm(e.target.value);
-                            setIsKkDropdownOpen(true);
-                          }}
-                          onFocus={() => setIsKkDropdownOpen(true)}
-                          placeholder="Cari Kepala Keluarga (Ketik Nama / ID KK / HP)..."
-                          className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
-                        />
-                      </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Dapukan di Tempat Sebelumnya</label>
+                <input name="previousDapukan" placeholder="Dapukan/Tugas di sambungan atau kelompok lama" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
 
-                      {/* Dropdown Results */}
-                      {isKkDropdownOpen && (
-                        <div className="absolute z-20 top-full left-0 right-0 mt-1 max-h-52 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl divide-y divide-slate-100">
-                          {filteredKKList.length === 0 ? (
-                            <div className="p-3 text-center text-xs text-slate-400">
-                              {headsOfFamily.length === 0 
-                                ? `Belum ada Kepala Keluarga di kelompok ${selectedLocation}` 
-                                : 'Tidak ada Kepala Keluarga yang cocok dengan pencarian'}
-                            </div>
-                          ) : (
-                            filteredKKList.map(k => (
-                              <button
-                                key={k.id || k.memberId}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedKKId(k.memberId);
-                                  setKkSearchTerm(`${k.memberId} - ${k.name} ${k.nickname ? `(${k.nickname})` : ''}`);
-                                  setIsKkDropdownOpen(false);
-                                }}
-                                className={cn(
-                                  "w-full px-3.5 py-2.5 text-left text-xs hover:bg-emerald-50 flex items-center justify-between transition-colors",
-                                  selectedKKId === k.memberId && "bg-emerald-50 text-emerald-800 font-bold"
-                                )}
-                              >
-                                <div>
-                                  <span className="font-bold text-slate-900">{k.name}</span>
-                                  {k.nickname && <span className="text-slate-500 ml-1">({k.nickname})</span>}
-                                  <p className="text-[10px] text-slate-400">{k.phone || 'Tanpa No. HP'}</p>
-                                </div>
-                                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono text-[10px] font-bold">
-                                  {k.memberId}
-                                </span>
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Status Mubaligh</label>
+                  <select name="isMubaligh" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Status Mubaligh...</option>
+                    <option value="Ya">Ya</option>
+                    <option value="Tidak">Tidak</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Punya Saham UB</label>
+                  <select name="hasUbShares" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Saham UB...</option>
+                    <option value="Sudah">Sudah</option>
+                    <option value="Belum">Belum</option>
+                  </select>
+                </div>
+              </div>
 
-                    {selectedKKId ? (
-                      <p className="text-xs text-emerald-700 font-bold flex items-center gap-1.5 pt-1">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        Terhubung dengan KK: <span className="font-mono">{selectedKKId}</span>
-                      </p>
-                    ) : (
-                      <p className="text-[11px] text-amber-700">
-                        * Wajib memilih salah satu Kepala Keluarga yang terdaftar.
-                      </p>
-                    )}
+              <div className="pt-3 flex justify-between">
+                <button type="button" onClick={() => setActiveTab('pendidikan')} className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-semibold text-xs hover:bg-slate-50 transition-all flex items-center gap-1.5">
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Kembali</span>
+                </button>
+                <button type="button" onClick={() => setActiveTab('keilmuan')} className="px-6 py-2.5 rounded-xl bg-slate-900 text-white font-semibold text-xs hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-sm">
+                  <span>Lanjut: Keilmuan & Haji</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* TAB 5: KEILMUAN, HAJI & KESEHATAN */}
+            <div className={cn("space-y-4", activeTab === 'keilmuan' ? 'block' : 'hidden')}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Sudah Jurus Keras</label>
+                  <select name="hasJurusKeras" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Status...</option>
+                    <option value="Sudah">Sudah</option>
+                    <option value="Belum">Belum</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Sudah Jurus Halus</label>
+                  <select name="hasJurusHalus" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    <option value="">Pilih Status...</option>
+                    <option value="Sudah">Sudah</option>
+                    <option value="Belum">Belum</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Sudah Haji</label>
+                <select 
+                  name="hasHajj" 
+                  value={hasHajjStatus} 
+                  onChange={(e) => setHasHajjStatus(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium"
+                >
+                  <option value="">Pilih Status Haji...</option>
+                  <option value="Sudah">Sudah</option>
+                  <option value="Belum">Belum</option>
+                </select>
+              </div>
+
+              {hasHajjStatus === 'Belum' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3.5 bg-amber-50 rounded-2xl border border-amber-100">
+                  <div>
+                    <label className="block text-xs font-bold text-amber-900 mb-1">Nomor Porsi Haji (Bila Belum)</label>
+                    <input name="hajjPortionNumber" placeholder="No. Porsi pendaftaran" className="w-full px-4 py-2 rounded-xl border border-amber-200 focus:ring-2 focus:ring-amber-500 outline-none text-sm bg-white font-medium" />
                   </div>
+                  <div>
+                    <label className="block text-xs font-bold text-amber-900 mb-1">Rencana Tahun Berangkat (Bila Belum)</label>
+                    <input name="plannedHajjYear" placeholder="Contoh: 2028" className="w-full px-4 py-2 rounded-xl border border-amber-200 focus:ring-2 focus:ring-amber-500 outline-none text-sm bg-white font-medium" />
+                  </div>
+                </div>
+              )}
+
+              {hasHajjStatus === 'Sudah' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3.5 bg-emerald-50 rounded-2xl border border-emerald-100">
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Nama Haji (Bila Sudah)</label>
+                    <input name="hajjName" placeholder="Gelar / Nama Haji" className="w-full px-4 py-2 rounded-xl border border-emerald-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white font-medium" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Tahun Haji (Bila Sudah)</label>
+                    <input name="hajjYear" placeholder="Contoh: 2022" className="w-full px-4 py-2 rounded-xl border border-emerald-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white font-medium" />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Riwayat Penyakit</label>
+                <textarea name="medicalHistory" rows={2} placeholder="Catatan riwayat kesehatan/penyakit..." className="w-full px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium" />
+              </div>
+
+              <div className="pt-3 flex justify-between">
+                <button type="button" onClick={() => setActiveTab('dapukan')} className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 font-semibold text-xs hover:bg-slate-50 transition-all flex items-center gap-1.5">
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Kembali</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Form Action Buttons */}
+            <div className="flex flex-col sm:flex-row gap-3 pt-6 border-t border-slate-100">
+              <button 
+                type="button" 
+                onClick={onBack} 
+                disabled={isSaving}
+                className="px-6 py-3 rounded-xl border border-slate-200 hover:bg-slate-50 transition-all font-semibold text-sm text-slate-700 disabled:opacity-50"
+              >
+                Batal & Keluar
+              </button>
+              <button 
+                type="submit" 
+                disabled={isSaving}
+                className="flex-1 px-6 py-3.5 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-all font-bold text-sm shadow-xl shadow-emerald-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-98"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Menyimpan Data Jamaah...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>Kirim & Simpan Data Jamaah</span>
+                  </>
                 )}
-
-                {/* Status Pernikahan */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
-                    <select
-                      name="maritalStatus"
-                      defaultValue="Belum Menikah"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="Belum Menikah">Belum Menikah</option>
-                      <option value="Menikah">Menikah</option>
-                      <option value="Duda">Duda</option>
-                      <option value="Janda">Janda</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Suami / Istri (Jika Menikah)</label>
-                    <input
-                      name="spouseName"
-                      placeholder="Nama Pasangan"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Domisili Saat Ini</label>
-                    <textarea
-                      name="currentAddress"
-                      placeholder="Jalan, RT/RW, Kelurahan, Kecamatan, Kota"
-                      rows={2}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Asal / KTP</label>
-                    <textarea
-                      name="originAddress"
-                      placeholder="Alamat asal daerah / sesuai KTP (jika berbeda dengan domisili)"
-                      rows={2}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ayah</label>
-                    <input
-                      name="fatherName"
-                      placeholder="Nama Ayah Kandung"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ibu</label>
-                    <input
-                      name="motherName"
-                      placeholder="Nama Ibu Kandung"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-between pt-4">
-                  <button
-                    type="button"
-                    onClick={() => setActiveStep('identitas')}
-                    className="px-6 py-3 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all flex items-center gap-2"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                    <span>Kembali</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setActiveStep('keilmuan')}
-                    className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-all flex items-center gap-2"
-                  >
-                    <span>Lanjut ke Keilmuan & Ibadah</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-
-            {/* STEP 3: KEILMUAN & IBADAH */}
-            {activeStep === 'keilmuan' && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-                <div className="p-4 bg-purple-50/60 rounded-2xl border border-purple-100/80 mb-4">
-                  <h3 className="font-black text-purple-900 text-sm mb-0.5">Keilmuan, Haji & Catatan Kesehatan</h3>
-                  <p className="text-xs text-purple-700 font-medium">Informasi pembinaan keagamaan dan riwayat haji</p>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
-                    <select
-                      name="category"
-                      defaultValue="UMUM"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="UMUM">UMUM (Dewasa / Orang Tua)</option>
-                      <option value="GPN">GPN (Generus Muda)</option>
-                      <option value="APR">APR (Pra-Remaja / SMP)</option>
-                      <option value="ACR">ACR (Cabe Rawit / SD)</option>
-                      <option value="DUDA">DUDA</option>
-                      <option value="JANDA">JANDA</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Status Mubaligh / Mubalighot</label>
-                    <select
-                      name="isMubaligh"
-                      defaultValue="Bukan"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="Bukan">Bukan</option>
-                      <option value="Mubaligh Kelompok">Mubaligh Kelompok</option>
-                      <option value="Mubaligh Desa">Mubaligh Desa</option>
-                      <option value="Mubaligh Daerah">Mubaligh Daerah</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Status Riwayat Haji / Umroh</label>
-                    <select
-                      name="hasHajj"
-                      defaultValue="Belum"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="Belum">Belum Pernah</option>
-                      <option value="Sudah">Sudah Pernah Haji</option>
-                      <option value="Pernah Umroh">Pernah Umroh</option>
-                      <option value="Sudah Daftar Porsi">Sudah Daftar Porsi Haji</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Punya Saham UB</label>
-                    <select
-                      name="hasUbShares"
-                      defaultValue="Tidak"
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium bg-white"
-                    >
-                      <option value="Tidak">Tidak</option>
-                      <option value="Ada">Ada</option>
-                    </select>
-                  </div>
-
-                  <div className="sm:col-span-2">
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Riwayat Penyakit / Catatan Medis (Opsional)</label>
-                    <textarea
-                      name="medicalHistory"
-                      placeholder="Informasi penyakit bawaan, alergi, atau catatan medis jika ada..."
-                      rows={2}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-medium"
-                    />
-                  </div>
-                </div>
-
-                {/* Final Submission Buttons */}
-                <div className="flex flex-col sm:flex-row gap-3 pt-6 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setActiveStep('keluarga')}
-                    disabled={isSaving}
-                    className="px-6 py-3.5 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all disabled:opacity-50"
-                  >
-                    Kembali
-                  </button>
-
-                  <button
-                    type="submit"
-                    disabled={isSaving}
-                    className="flex-1 py-3.5 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-200 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-98"
-                  >
-                    {isSaving ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        <span>Menyimpan Data Jamaah...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Check className="w-5 h-5" />
-                        <span>Kirim & Simpan Data Jamaah</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </motion.div>
-            )}
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -2552,7 +2851,7 @@ function LoginView({ onAttendanceMode, onRegisterJamaahMode }: { onAttendanceMod
           <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <LayoutDashboard className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Desa GND</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Masjid</h1>
           <p className="text-slate-500 mt-2">Silakan masuk ke akun Anda</p>
         </div>
 
@@ -2961,24 +3260,6 @@ function Overview({ profile }: { profile: UserProfile }) {
   );
 }
 
-const LOCATION_PREFIXES: Record<string, string> = {
-  'Kramat Batu': 'KB',
-  'Karya Utama': 'KU',
-  'Radio Dalam': 'RD',
-  'Cipete': 'CP',
-  'Antena': 'AN'
-};
-
-const DAPUKAN_OPTIONS = [
-  "Ides", "Wides", "Koor. Lupg", "Bosdes", "Mubdes", "Tim Aghniya'", "Ku Des", 
-  "Tim Bk", "Tim Bacaan", "Tim Basyiron Wa Nadziron", "Tim Benda Sb", "Tim DhuaFa'", 
-  "Tim Faraoid", "Tim Gambuh", "Tim Haji", "Tim Keluarga Bahagia", "Tim Kematian", 
-  "Tim Manula", "Tim Mondar Mandir", "Tim Muballigh", "Tim Organisasi", 
-  "Tim Pembangunan", "Tim Pkw", "Tim Penyelesaian", "Tim Pramuka", "Tim Sarjana", 
-  "Tim Ub", "Tim Zakat", "Tim Cai & Remaja (Karemdes)", "Keputrian Des", 
-  "Ikel", "Wikel", "Pjkbm", "Boskel", "Mubkel", "Ku Kel", "Pakar Pendidik", "Ptk", "Keputkel"
-];
-
 function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserProfile, formTrigger?: string | null, onFormTriggered?: () => void }) {
   const { accessToken, spreadsheetId } = useFirebase();
   const { showToast } = useToast();
@@ -3030,10 +3311,10 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
   };
 
   const filteredJamaah = jamaah.filter(j => 
-    j.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    j.nickname?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    j.phone?.includes(searchTerm) ||
-    j.memberId?.toLowerCase().includes(searchTerm.toLowerCase())
+    String(j.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+    String(j.nickname || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    String(j.phone || '').includes(searchTerm) ||
+    String(j.memberId || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -3760,11 +4041,11 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                                     if (!kkSearchTerm.trim()) return true;
                                     const term = kkSearchTerm.toLowerCase();
                                     return (
-                                      kk.name.toLowerCase().includes(term) ||
-                                      kk.memberId.toLowerCase().includes(term) ||
-                                      (kk.nickname && kk.nickname.toLowerCase().includes(term)) ||
-                                      (kk.phone && kk.phone.includes(term)) ||
-                                      (kk.location && kk.location.toLowerCase().includes(term))
+                                      String(kk.name || '').toLowerCase().includes(term) ||
+                                      String(kk.memberId || '').toLowerCase().includes(term) ||
+                                      String(kk.nickname || '').toLowerCase().includes(term) ||
+                                      String(kk.phone || '').includes(term) ||
+                                      String(kk.location || '').toLowerCase().includes(term)
                                     );
                                   });
 
@@ -5104,7 +5385,9 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
 
   const handleConfirm = async (id: string, current: boolean) => {
     try {
+      const existingRecord = attendanceData.find(a => a.id === id);
       await saveData(null, accessToken, spreadsheetId, 'attendance', {
+        ...(existingRecord || {}),
         isConfirmed: !current
       }, id);
       showToast(!current ? 'Kehadiran dikonfirmasi!' : 'Konfirmasi dibatalkan', 'success');
@@ -6718,16 +7001,24 @@ function doPost(e) {
         }
       }
       
-      var rowData = headers.map(function(h) {
-        var val = item[h];
-        if (val === undefined || val === null) return '';
-        if (typeof val === 'object') return JSON.stringify(val);
-        return val;
-      });
-      
       if (existingRow !== -1) {
+        var existingValues = rows[existingRow - 1] || [];
+        var rowData = headers.map(function(h, colIdx) {
+          var val = item[h];
+          if (val === undefined || val === null || val === '') {
+            return (existingValues[colIdx] !== undefined) ? existingValues[colIdx] : '';
+          }
+          if (typeof val === 'object') return JSON.stringify(val);
+          return val;
+        });
         sheet.getRange(existingRow, 1, 1, rowData.length).setValues([rowData]);
       } else {
+        var rowData = headers.map(function(h) {
+          var val = item[h];
+          if (val === undefined || val === null) return '';
+          if (typeof val === 'object') return JSON.stringify(val);
+          return val;
+        });
         sheet.appendRow(rowData);
       }
       return ContentService.createTextOutput(JSON.stringify({ status: 'success', id: data.id })).setMimeType(ContentService.MimeType.JSON);
@@ -7156,6 +7447,20 @@ function DashboardContent() {
     return false;
   });
 
+  const [isRegistrationMode, setIsRegistrationMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return (
+        params.get('register_jamaah') === 'true' ||
+        params.get('register') === 'true' ||
+        params.get('registrasi') === 'true' ||
+        Boolean(params.get('token')) ||
+        Boolean(params.get('reg_token'))
+      );
+    }
+    return false;
+  });
+
   const handleCheckStatus = useCallback(async () => {
     if (syncProfileFromSheet && user?.uid) {
       await syncProfileFromSheet(user.uid);
@@ -7182,7 +7487,26 @@ function DashboardContent() {
     );
   }
 
-  if (!user || !profile) return <LoginView onAttendanceMode={() => setIsAttendanceMode(true)} />;
+  if (isRegistrationMode) {
+    return (
+      <PublicJamaahRegistrationView 
+        onBack={() => {
+          setIsRegistrationMode(false);
+          if (typeof window !== 'undefined' && window.history) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        }} 
+        spreadsheetId={spreadsheetId || undefined} 
+      />
+    );
+  }
+
+  if (!user || !profile) return (
+    <LoginView 
+      onAttendanceMode={() => setIsAttendanceMode(true)} 
+      onRegisterJamaahMode={() => setIsRegistrationMode(true)} 
+    />
+  );
 
   const isUserVerified = profile.isVerified === true || (profile.isVerified as any) === 'true' || (profile.isVerified as any) === 'TRUE';
 

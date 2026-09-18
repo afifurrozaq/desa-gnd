@@ -660,10 +660,10 @@ export function CacahJiwaView({ profile }: { profile: UserProfile }) {
     if (!detailSearch.trim()) return selectedCellDetail.members;
     const q = detailSearch.toLowerCase();
     return selectedCellDetail.members.filter(m => 
-      m.jamaah.name.toLowerCase().includes(q) ||
-      m.jamaah.memberId.toLowerCase().includes(q) ||
-      (m.jamaah.phone || '').includes(q) ||
-      (m.jamaah.nickname || '').toLowerCase().includes(q)
+      String(m.jamaah.name || '').toLowerCase().includes(q) ||
+      String(m.jamaah.memberId || '').toLowerCase().includes(q) ||
+      String(m.jamaah.phone || '').includes(q) ||
+      String(m.jamaah.nickname || '').toLowerCase().includes(q)
     );
   }, [selectedCellDetail, detailSearch]);
 
