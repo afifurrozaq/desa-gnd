@@ -54,6 +54,7 @@ import {
 import { QRCodeCanvas } from 'qrcode.react';
 import { ToastProvider, useToast } from './components/ToastContext';
 import { CacahJiwaView } from './components/CacahJiwaView';
+import { CalendarActivitiesView } from './components/CalendarActivitiesView';
 import { 
   LineChart, 
   Line, 
@@ -1441,7 +1442,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
           </div>
 
           <p className="text-xs text-slate-500 mb-8 leading-relaxed">
-            Silakan hubungi pengurus kelompok atau admin desa untuk meminta tautan pendaftaran mandiri yang baru.
+            Silakan hubungi pengurus kelompok atau admin Desa GND untuk meminta tautan pendaftaran mandiri yang baru.
           </p>
 
           <button
@@ -2654,7 +2655,7 @@ function RegistrationLinkModal({
                       <div className="flex-1 space-y-2 text-center sm:text-left">
                         <p className="text-xs font-bold text-white">QR Code Pendaftaran</p>
                         <p className="text-[11px] text-slate-400">
-                          Jamaah dapat memindai QR code ini di kelompok atau selebaran untuk langsung mengisi form.
+                          Jamaah dapat memindai QR code ini di Kelompok atau selebaran untuk langsung mengisi form.
                         </p>
                         <div className="flex flex-wrap gap-2 justify-center sm:justify-start pt-1">
                           <button
@@ -2984,6 +2985,18 @@ function LoginView({ onAttendanceMode, onRegisterJamaahMode }: { onAttendanceMod
           >
             {isRegister ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar Akun Pengurus'}
           </button>
+        </div>
+
+        <div className="mt-6 pt-4 border-t border-slate-100 text-center text-xs text-slate-400 font-medium">
+          Powered by{' '}
+          <a 
+            href="https://github.com/afifurrozaq" 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="font-bold text-emerald-600 hover:underline"
+          >
+            ARSH Studio
+          </a>
         </div>
       </motion.div>
     </div>
@@ -4782,284 +4795,7 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
 }
 
 function ActivitiesView({ profile }: { profile: UserProfile }) {
-  const { accessToken, spreadsheetId } = useFirebase();
-  const { showToast } = useToast();
-  const filter = useMemo(() => (profile.role === 'pengurus' && profile.location && (profile.location as string) !== 'Seluruh Lokasi') ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
-  const { data: activities, loading } = useDataQuery<Activity>('activities', filter);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(6);
-
-  const totalPages = Math.ceil(activities.length / pageSize) || 1;
-  const paginatedActivities = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return activities.slice(start, start + pageSize);
-  }, [activities, currentPage, pageSize]);
-
-  const [showForm, setShowForm] = useState(false);
-  const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
-  const [base64Images, setBase64Images] = useState<string[]>([]);
-
-  const handleImagesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return;
-    const files = Array.from(e.target.files);
-    files.forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setBase64Images(prev => [...prev, reader.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const data = {
-      title: formData.get('title') as string,
-      description: formData.get('description') as string,
-      type: formData.get('type') as Activity['type'],
-      date: editingActivity ? editingActivity.date : Date.now(),
-      imageUrls: base64Images.length > 0 ? base64Images : editingActivity?.imageUrls || [],
-      location: profile.role === 'pengurus' ? profile.location : formData.get('location') as MosqueLocation,
-      createdBy: profile.uid
-    };
-
-    setIsSaving(true);
-    try {
-      await saveData(null, accessToken, spreadsheetId, 'activities', data, editingActivity?.id);
-      showToast('Data kegiatan berhasil disimpan!', 'success');
-      closeForm();
-    } catch (err: any) {
-      showToast(`Gagal menyimpan data: ${err.message}`, 'error');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const closeForm = () => {
-    setShowForm(false);
-    setEditingActivity(null);
-    setBase64Images([]);
-  };
-
-  const openEdit = (a: Activity) => {
-    setEditingActivity(a);
-    setBase64Images(parseImageUrls(a.imageUrls));
-    setShowForm(true);
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-slate-900">Kegiatan Desa Gandaria</h2>
-          <p className="text-slate-500">Kelola Kegiatan Desa Gandaria</p>
-        </div>
-        <button 
-          onClick={() => setShowForm(true)}
-          className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-semibold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
-        >
-          <Plus className="w-5 h-5" />
-          Tambah Kegiatan
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm animate-pulse space-y-4">
-              <div className="h-48 bg-slate-100 rounded-2xl w-full flex items-center justify-center">
-                <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
-              </div>
-              <p className="text-center text-xs font-semibold text-slate-500">Memuat data kegiatan...</p>
-            </div>
-          ))}
-        </div>
-      ) : activities.length === 0 ? (
-        <div className="bg-white rounded-3xl border border-slate-100 p-12 text-center text-slate-400 font-medium">
-          Belum ada kegiatan terdaftar
-        </div>
-      ) : (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {paginatedActivities.map((activity, actIdx) => {
-              const actImages = parseImageUrls(activity.imageUrls);
-              return (
-                <div key={activity.id ? `${activity.id}-${actIdx}` : `act-${actIdx}`} className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm flex flex-col">
-                  <div className="h-56 relative group">
-                    <div className="w-full h-full flex overflow-x-auto snap-x snap-mandatory scrollbar-hide">
-                      {actImages.length > 0 ? (
-                        actImages.map((url, imgIdx) => (
-                          <img key={`act-img-${actIdx}-${imgIdx}`} src={url} className="w-full h-full object-cover flex-shrink-0 snap-center" />
-                        ))
-                      ) : (
-                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
-                          <Calendar className="w-12 h-12" />
-                        </div>
-                      )}
-                    </div>
-                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                     <button 
-                      onClick={() => openEdit(activity)}
-                      className="bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-emerald-500 transition-colors"
-                    >
-                      <Plus className="w-6 h-6" />
-                    </button>
-                     <button 
-                      onClick={() => setDeleteId(activity.id)}
-                      className="bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-red-500 transition-colors"
-                    >
-                      <Plus className="w-6 h-6 rotate-45" />
-                    </button>
-                  </div>
-                  <div className="absolute top-4 left-4">
-                    <span className={cn(
-                      "px-3 py-1 rounded-full text-xs font-bold text-white uppercase",
-                      activity.type === 'harian' ? "bg-emerald-500" : "bg-blue-500"
-                    )}>
-                      {activity.type}
-                    </span>
-                  </div>
-                </div>
-                <div className="p-6">
-                  <h3 className="text-lg font-bold text-slate-900 mb-2">{activity.title}</h3>
-                  <p className="text-slate-500 text-sm mb-4 flex-grow">{activity.description}</p>
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <Clock className="w-4 h-4" />
-                    {new Date(activity.date).toLocaleString()}
-                  </div>
-                </div>
-              </div>
-              );
-            })}
-          </div>
-
-          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
-            <Pagination
-              currentPage={currentPage}
-              totalPages={totalPages}
-              totalItems={activities.length}
-              pageSize={pageSize}
-              onPageChange={setCurrentPage}
-              onPageSizeChange={setPageSize}
-              pageSizeOptions={[6, 12, 24]}
-              className="px-6 py-4"
-            />
-          </div>
-        </div>
-      )}
-
-      <AnimatePresence>
-        {showForm && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-              <h3 className="text-xl font-bold mb-6">{editingActivity ? 'Edit Kegiatan' : 'Tambah Kegiatan'}</h3>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Judul Kegiatan</label>
-                  <input name="title" defaultValue={editingActivity?.title} required className="w-full px-4 py-2 rounded-xl border outline-none" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Deskripsi</label>
-                  <textarea name="description" defaultValue={editingActivity?.description} required className="w-full px-4 py-2 rounded-xl border outline-none min-h-[100px]" />
-                </div>
-                <div className="grid grid-cols-1 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Upload Foto (Bisa banyak)</label>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {base64Images.map((img, i) => (
-                        <div key={i} className="relative w-16 h-16 group">
-                          <img src={img} className="w-full h-full object-cover rounded-lg" />
-                          <button 
-                            type="button" 
-                            onClick={() => setBase64Images(prev => prev.filter((_, idx) => idx !== i))}
-                            className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <Plus className="w-3 h-3 rotate-45" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <label className="flex-grow cursor-pointer bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl p-4 hover:border-emerald-500 transition-all text-center">
-                        <span className="text-xs text-slate-400">Klik untuk upload foto-foto</span>
-                        <input type="file" accept="image/*" multiple onChange={handleImagesChange} className="hidden" />
-                      </label>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Tipe</label>
-                      <select name="type" defaultValue={editingActivity?.type} className="w-full px-4 py-2 rounded-xl border outline-none">
-                        <option value="harian">Harian</option>
-                        <option value="mingguan">Mingguan</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Lokasi</label>
-                      <select name="location" defaultValue={editingActivity?.location || profile.location} className="w-full px-4 py-2 rounded-xl border outline-none" disabled={profile.role === 'pengurus'}>
-                        {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                          <option key={l} value={l}>{l}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex gap-3 pt-4">
-                  <button 
-                    type="button" 
-                    onClick={closeForm} 
-                    disabled={isSaving}
-                    className="flex-1 px-6 py-2.5 rounded-xl border font-semibold hover:bg-slate-50 transition-all disabled:opacity-50"
-                  >
-                    Batal
-                  </button>
-                  <button 
-                    type="submit" 
-                    disabled={isSaving}
-                    className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    {isSaving ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Menyimpan...</span>
-                      </>
-                    ) : (
-                      'Simpan'
-                    )}
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <DeleteConfirmation 
-        isOpen={!!deleteId}
-        onClose={() => setDeleteId(null)}
-        onConfirm={async () => {
-          if (!deleteId) return;
-          setIsDeleting(true);
-          try {
-            await deleteData(null, accessToken, spreadsheetId, 'activities', deleteId);
-            showToast('Kegiatan berhasil dihapus!', 'success');
-            setDeleteId(null);
-          } catch (err: any) {
-            showToast(`Gagal menghapus: ${err.message}`, 'error');
-          } finally {
-            setIsDeleting(false);
-          }
-        }}
-        loading={isDeleting}
-        title="Hapus Kegiatan"
-        message="Hapus postingan kegiatan ini? Foto dan deskripsi akan dihapus secara permanen."
-      />
-    </div>
-  );
+  return <CalendarActivitiesView profile={profile} />;
 }
 
 function FacilityView({ profile }: { profile: UserProfile }) {
@@ -7565,7 +7301,7 @@ function DashboardContent() {
           <SidebarItem icon={FileSpreadsheet} label="Cacah Jiwa" active={activeTab === 'cacah_jiwa'} onClick={() => setActiveTab('cacah_jiwa')} />
           <SidebarItem icon={Package} label="Inventaris" active={activeTab === 'inventaris'} onClick={() => setActiveTab('inventaris')} />
           <SidebarItem icon={MapIcon} label="Tanah Sabilillah" active={activeTab === 'tanah'} onClick={() => setActiveTab('tanah')} />
-          <SidebarItem icon={Calendar} label="Kegiatan" active={activeTab === 'activities'} onClick={() => setActiveTab('activities')} />
+          <SidebarItem icon={Calendar} label="Kalender Kegiatan" active={activeTab === 'activities'} onClick={() => setActiveTab('activities')} />
           <SidebarItem icon={Clock} label="Fasilitas" active={activeTab === 'facilities'} onClick={() => setActiveTab('facilities')} />
           <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => setActiveTab('attendance_report')} />
           <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => setActiveTab('ub_shopping')} />
@@ -7596,6 +7332,18 @@ function DashboardContent() {
             <LogOut className="w-5 h-5" />
             Keluar
           </button>
+
+          <div className="mt-4 pt-3 border-t border-slate-100 text-center text-xs text-slate-400 font-medium">
+            Powered by{' '}
+            <a 
+              href="https://github.com/afifurrozaq" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="font-bold text-emerald-600 hover:underline"
+            >
+              ARSH Studio
+            </a>
+          </div>
         </div>
       </aside>
 
@@ -7633,7 +7381,7 @@ function DashboardContent() {
                 <SidebarItem icon={FileSpreadsheet} label="Cacah Jiwa" active={activeTab === 'cacah_jiwa'} onClick={() => { setActiveTab('cacah_jiwa'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={Package} label="Inventaris" active={activeTab === 'inventaris'} onClick={() => { setActiveTab('inventaris'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={MapIcon} label="Tanah Sabilillah" active={activeTab === 'tanah'} onClick={() => { setActiveTab('tanah'); setIsMobileMenuOpen(false); }} />
-                <SidebarItem icon={Calendar} label="Kegiatan" active={activeTab === 'activities'} onClick={() => { setActiveTab('activities'); setIsMobileMenuOpen(false); }} />
+                <SidebarItem icon={Calendar} label="Kalender Kegiatan" active={activeTab === 'activities'} onClick={() => { setActiveTab('activities'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={Clock} label="Fasilitas" active={activeTab === 'facilities'} onClick={() => { setActiveTab('facilities'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => { setActiveTab('attendance_report'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => { setActiveTab('ub_shopping'); setIsMobileMenuOpen(false); }} />
@@ -7655,6 +7403,18 @@ function DashboardContent() {
                   <LogOut className="w-5 h-5" />
                   Keluar
                 </button>
+
+                <div className="mt-4 pt-3 border-t border-slate-100 text-center text-xs text-slate-400 font-medium">
+                  Powered by{' '}
+                  <a 
+                    href="https://github.com/afifurrozaq" 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="font-bold text-emerald-600 hover:underline"
+                  >
+                    ARSH Studio
+                  </a>
+                </div>
               </div>
             </motion.div>
           </motion.div>
@@ -7662,65 +7422,79 @@ function DashboardContent() {
       </AnimatePresence>
 
       {/* Main Content */}
-      <main className="flex-grow p-4 lg:p-12 max-w-7xl mx-auto w-full">
-        <header className="mb-12 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
-          <div className="flex items-center justify-between lg:block">
-            <div>
-              <h1 className="text-2xl lg:text-3xl font-black text-slate-900">Selamat Datang, {profile.displayName.split(' ')[0]}!</h1>
-              <p className="text-slate-500 mt-1 hidden sm:block">Sistem Manajemen Desa Gandaria</p>
+      <main className="flex-grow p-4 lg:p-12 max-w-7xl mx-auto w-full flex flex-col justify-between">
+        <div>
+          <header className="mb-12 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+            <div className="flex items-center justify-between lg:block">
+              <div>
+                <h1 className="text-2xl lg:text-3xl font-black text-slate-900">Selamat Datang, {profile.displayName.split(' ')[0]}!</h1>
+                <p className="text-slate-500 mt-1 hidden sm:block">Sistem Manajemen Desa Gandaria</p>
+              </div>
+              <button 
+                onClick={() => setIsMobileMenuOpen(true)}
+                className="lg:hidden p-3 bg-white rounded-2xl border border-slate-100 shadow-sm text-slate-600"
+              >
+                <Menu className="w-6 h-6" />
+              </button>
             </div>
-            <button 
-              onClick={() => setIsMobileMenuOpen(true)}
-              className="lg:hidden p-3 bg-white rounded-2xl border border-slate-100 shadow-sm text-slate-600"
-            >
-              <Menu className="w-6 h-6" />
-            </button>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-3 px-4 py-2 bg-white rounded-2xl border border-slate-100 shadow-sm text-sm font-medium text-slate-600">
-               <MapPin className="w-4 h-4 text-emerald-500" />
-               {profile.location || 'Seluruh Lokasi'}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3 px-4 py-2 bg-white rounded-2xl border border-slate-100 shadow-sm text-sm font-medium text-slate-600">
+                 <MapPin className="w-4 h-4 text-emerald-500" />
+                 {profile.location || 'Seluruh Lokasi'}
+              </div>
+              <button 
+                onClick={() => auth && signOut(auth)}
+                className="lg:hidden p-3 bg-white rounded-2xl border border-slate-100 shadow-sm text-red-500 hover:bg-red-50 transition-all"
+                title="Keluar"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
             </div>
-            <button 
-              onClick={() => auth && signOut(auth)}
-              className="lg:hidden p-3 bg-white rounded-2xl border border-slate-100 shadow-sm text-red-500 hover:bg-red-50 transition-all"
-              title="Keluar"
-            >
-              <LogOut className="w-5 h-5" />
-            </button>
-          </div>
-        </header>
+          </header>
 
-        {!(spreadsheetId) && activeTab !== 'migration' && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-12 p-6 bg-amber-50 rounded-[2rem] border border-amber-200 flex flex-col md:flex-row items-center gap-6"
+          {!(spreadsheetId) && activeTab !== 'migration' && (
+            <motion.div 
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-12 p-6 bg-amber-50 rounded-[2rem] border border-amber-200 flex flex-col md:flex-row items-center gap-6"
+            >
+              <div className="p-4 bg-amber-100 rounded-2xl text-amber-600">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <div className="flex-grow text-center md:text-left">
+                <h3 className="text-lg font-black text-amber-900">Google Sheets Belum Terhubung</h3>
+                <p className="text-amber-700 font-medium">Data bisnis saat ini dikunci. Silakan lakukan migrasi database untuk mengaktifkan penyimpanan di Google Sheets.</p>
+              </div>
+              <button 
+                onClick={() => setActiveTab('migration')}
+                className="px-8 py-3 bg-amber-600 text-white rounded-xl font-black uppercase tracking-wider hover:bg-amber-700 transition-all shadow-lg shadow-amber-200 whitespace-nowrap"
+              >
+                Ke Menu Migrasi
+              </button>
+            </motion.div>
+          )}
+
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3 }}
           >
-            <div className="p-4 bg-amber-100 rounded-2xl text-amber-600">
-              <AlertCircle className="w-8 h-8" />
-            </div>
-            <div className="flex-grow text-center md:text-left">
-              <h3 className="text-lg font-black text-amber-900">Google Sheets Belum Terhubung</h3>
-              <p className="text-amber-700 font-medium">Data bisnis saat ini dikunci. Silakan lakukan migrasi database untuk mengaktifkan penyimpanan di Google Sheets.</p>
-            </div>
-            <button 
-              onClick={() => setActiveTab('migration')}
-              className="px-8 py-3 bg-amber-600 text-white rounded-xl font-black uppercase tracking-wider hover:bg-amber-700 transition-all shadow-lg shadow-amber-200 whitespace-nowrap"
-            >
-              Ke Menu Migrasi
-            </button>
+            {renderContent()}
           </motion.div>
-        )}
+        </div>
 
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3 }}
-        >
-          {renderContent()}
-        </motion.div>
+        <footer className="mt-16 pt-6 border-t border-slate-100 text-center text-xs text-slate-400 font-medium">
+          Powered by{' '}
+          <a 
+            href="https://github.com/afifurrozaq" 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="font-bold text-emerald-600 hover:underline"
+          >
+            ARSH Studio
+          </a>
+        </footer>
       </main>
     </div>
   );

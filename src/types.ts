@@ -90,10 +90,13 @@ export interface Activity {
   title: string;
   description: string;
   date: number;
-  type: 'harian' | 'mingguan';
+  time?: string;
+  type?: 'harian' | 'mingguan' | 'bulanan' | 'khusus' | string;
+  category?: string;
+  speaker?: string;
   imageUrls: string[];
-  createdBy: string;
-  location: MosqueLocation;
+  createdBy?: string;
+  location: MosqueLocation | string;
 }
 
 export interface FacilityStat {
