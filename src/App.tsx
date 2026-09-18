@@ -422,7 +422,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
         <body>
           <div class="card">
             <div class="tag">Presensi Sambung Jamaah</div>
-            <h1>Daftar Hadir Pengajian</h1>
+            <h1>Daftar Hadir Sambung</h1>
             <div class="loc">Kelompok ${qrTargetLocation}</div>
             <div class="meta">Tanggal: ${qrTargetDate} • Sesi: ${qrTargetSession}</div>
             <div class="qr-wrapper">
@@ -562,7 +562,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               <span className="text-emerald-700 font-bold">{lastSubmittedData.location}</span>
             </div>
             <div className="flex justify-between items-center py-1 border-b border-slate-100">
-              <span className="text-slate-500 font-semibold">Sesi Pengajian:</span>
+              <span className="text-slate-500 font-semibold">Sesi Sambung:</span>
               <span className="text-slate-800 font-bold">{lastSubmittedData.sessionType}</span>
             </div>
             <div className="flex justify-between items-center py-1 border-b border-slate-100">
@@ -790,7 +790,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               )}
 
               <div className="space-y-3">
-                <label className="block text-[11px] font-black text-slate-400 mb-2 uppercase tracking-[0.2em] ml-1">3. Jenis Pengajian</label>
+                <label className="block text-[11px] font-black text-slate-400 mb-2 uppercase tracking-[0.2em] ml-1">3. Jenis Sambung</label>
                 <div className="grid grid-cols-3 gap-3">
                   {(['Kelompok', 'Desa', 'Acara'] as const).map(type => (
                     <button
@@ -886,7 +886,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                   </div>
                   <div>
                     <h3 className="text-lg font-black text-slate-900 leading-tight">QR Code Presensi</h3>
-                    <p className="text-xs text-slate-500 font-medium">Embed lokasi & tanggal pengajian</p>
+                    <p className="text-xs text-slate-500 font-medium">Embed lokasi & tanggal Sambung</p>
                   </div>
                 </div>
                 <button 
@@ -936,7 +936,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                   </div>
                   <div>
                     <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
-                      3. Sesi Pengajian
+                      3. Sesi Sambung
                     </label>
                     <select
                       value={qrTargetSession}
