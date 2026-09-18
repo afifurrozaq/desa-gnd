@@ -20,6 +20,7 @@ export interface UserProfile {
   location?: MosqueLocation; // Only for 'pengurus'
   isVerified: boolean;
   createdAt: number;
+  spreadsheetId?: string;
 }
 
 export type JamaahCategory = 'UMUM' | 'ACR' | 'APR' | 'GPN';
@@ -28,7 +29,11 @@ export interface Jamaah {
   id: string;
   memberId: string; // KB001, KB001-01, etc.
   name: string;
-  address: string;
+  nickname?: string;
+  gender?: string;
+  originAddress?: string;
+  currentAddress?: string;
+  address?: string; // Legacy fallback
   phone: string;
   location: MosqueLocation;
   photoUrl?: string;
@@ -36,7 +41,34 @@ export interface Jamaah {
   isKK: boolean;
   kkId?: string; // Reference to the KK's memberId
   familyOrder: number; // 0 for KK, 1, 2, etc. for members
+  dapukan?: string[];
+  positions?: string[]; // Legacy fallback
   registeredAt: number;
+  placeOfBirth?: string;
+  dateOfBirth?: string;
+  fatherName?: string;
+  motherName?: string;
+  parentPhone?: string;
+  lastEducation?: string;
+  majorOrClass?: string;
+  schoolOrUniversity?: string;
+  currentJob?: string;
+  workplaceAddress?: string;
+  maritalStatus?: string;
+  marriageYear?: string;
+  spouseName?: string;
+  hasJurusKeras?: string;
+  hasJurusHalus?: string;
+  bloodType?: string;
+  hasUbShares?: string;
+  previousDapukan?: string;
+  isMubaligh?: string;
+  hasHajj?: string;
+  hajjPortionNumber?: string;
+  plannedHajjYear?: string;
+  hajjName?: string;
+  hajjYear?: string;
+  medicalHistory?: string;
 }
 
 export interface Asset {
@@ -84,4 +116,17 @@ export interface Attendance {
   status: 'hadir' | 'izin';
   reason?: string;
   isConfirmed?: boolean;
+}
+
+export interface UBShopping {
+  id: string;
+  jamaahId: string;
+  jamaahName: string;
+  location: MosqueLocation;
+  amount: number;
+  date: number; // timestamp
+  month: number; // 0-11
+  year: number;
+  note?: string;
+  createdAt: number;
 }

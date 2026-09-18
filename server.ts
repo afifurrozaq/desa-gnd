@@ -15,6 +15,17 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  app.get("/api/config", (req, res) => {
+    res.json({
+      spreadsheetId: process.env.VITE_SPREADSHEET_ID || process.env.SPREADSHEET_ID || ""
+    });
+  });
+
+  app.get("/firebase-applet-config.json", (req, res) => {
+    const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+    res.sendFile(configPath);
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

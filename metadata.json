@@ -1,5 +1,5 @@
 {
-  "name": "Sistem Manajemen Desa Gandaria",
+  "name": "Sistem Manajemen Masjid",
   "description": "Sistem informasi terintegrasi untuk manajemen data jamaah, inventaris barang, kegiatan masjid, dan statistik fasilitas real-time.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

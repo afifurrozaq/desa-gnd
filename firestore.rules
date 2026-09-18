@@ -1,135 +1,28 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 1. Default deny catch-all
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // --- Helpers ---
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isEmailVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+    match /users/{allPaths=**} {
+      allow read, write: if isSignedIn();
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    // Public collections for attendance feature
+    match /jamaah/{allPaths=**} { 
+      allow read: if true; 
+      allow write: if isSignedIn();
+    }
+    match /attendance/{allPaths=**} { 
+      allow read, create: if true; 
+      allow update, delete: if isSignedIn();
     }
 
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    // Role helpers using get() - cached per request
-    function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-
-    function isAdmin() {
-      return isSignedIn() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-             getUserData().role == 'admin';
-    }
-
-    function isPengurus() {
-      return isSignedIn() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-             getUserData().role == 'pengurus';
-    }
-
-    // --- Collections ---
-
-    match /users/{uid} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.auth.uid == uid && 
-        incoming().keys().hasAll(['uid', 'email', 'role', 'createdAt', 'isVerified']) &&
-        incoming().role in ['admin', 'pengurus'] &&
-        incoming().uid == request.auth.uid &&
-        incoming().isVerified == false;
-      allow update: if isSignedIn() && (request.auth.uid == uid || isAdmin()) &&
-        (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'location']));
-      allow delete: if isAdmin();
-    }
-
-    match /jamaah/{id} {
-      function isValidJamaah(data) {
-        return data.name is string && data.name.size() > 0 &&
-               data.location in ['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'] &&
-               data.category in ['UMUM', 'ACR', 'APR', 'GPN'] &&
-               data.registeredAt is number;
-      }
-
-      allow read: if true; // Public for attendance search
-      
-      allow create: if isSignedIn() && isValidJamaah(incoming()) && (
-        isAdmin() || (isPengurus() && incoming().location == getUserData().get('location', ''))
-      );
-      
-      allow update: if isSignedIn() && isValidJamaah(incoming()) && (
-        isAdmin() || (isPengurus() && existing().location == getUserData().get('location', ''))
-      );
-      
-      allow delete: if isAdmin();
-    }
-
-    match /attendance/{id} {
-      function isValidAttendance(data) {
-        return data.jamaahId is string &&
-               data.date is number &&
-               data.location in ['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'] &&
-               data.category in ['UMUM', 'ACR', 'APR', 'GPN'];
-      }
-
-      allow read: if true; // Public for attendance validation and reporting (filtered in UI)
-      allow create: if isValidAttendance(incoming());
-      allow update: if isSignedIn() && (isAdmin() || isPengurus());
-      allow delete: if isSignedIn() && (isAdmin() || isPengurus());
-    }
-
-    match /assets/{id} {
-      function isValidAsset(data) {
-        return data.name is string && data.name.size() > 0 && 
-               data.status in ['baik', 'rusak', 'perlu perbaikan', 'wakaf', 'sertifikasi', 'terjual'] &&
-               (data.quantity is number || data.areaSize is number);
-      }
-
-      allow read: if isSignedIn() && (isAdmin() || (isPengurus() && resource.data.location == getUserData().get('location', '')));
-      allow create: if isSignedIn() && isValidAsset(incoming()) && (
-        isAdmin() || (isPengurus() && incoming().location == getUserData().get('location', ''))
-      );
-      allow update: if isSignedIn() && isValidAsset(incoming()) && (
-        isAdmin() || (isPengurus() && existing().location == getUserData().get('location', ''))
-      );
-      allow delete: if isAdmin();
-    }
-
-    match /activities/{id} {
-      function isValidActivity(data) {
-        return data.title is string && data.title.size() > 0 &&
-               data.type in ['harian', 'mingguan'] &&
-               data.location in ['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'];
-      }
-
-      allow read: if true; // Public for dashboard
-      allow create: if isSignedIn() && isValidActivity(incoming()) && (
-        isAdmin() || (isPengurus() && incoming().location == getUserData().get('location', ''))
-      );
-      allow update: if isSignedIn() && isValidActivity(incoming()) && (
-        isAdmin() || (isPengurus() && existing().location == getUserData().get('location', ''))
-      );
-      allow delete: if isAdmin();
-    }
-
-    match /facility_stats/{id} {
-      allow read: if true;
-      allow write: if isAdmin() || isPengurus();
-    }
+    // Private collections (Dashboard only)
+    match /assets/{allPaths=**} { allow read, write: if isSignedIn(); }
+    match /activities/{allPaths=**} { allow read, write: if isSignedIn(); }
+    match /facility_stats/{allPaths=**} { allow read, write: if isSignedIn(); }
+    match /ub_shopping/{allPaths=**} { allow read, write: if isSignedIn(); }
   }
 }

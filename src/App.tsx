@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   LayoutDashboard, 
   Users, 
@@ -21,8 +21,24 @@ import {
   ClipboardList,
   ChevronLeft,
   ChevronRight,
-  ShoppingBag
+  ShoppingBag,
+  Database,
+  CloudCog,
+  Loader2,
+  Eye,
+  FileText,
+  HeartPulse,
+  GraduationCap,
+  Briefcase,
+  UserCheck,
+  PhoneCall,
+  RefreshCw,
+  Copy,
+  Check,
+  ExternalLink,
+  ShieldCheck
 } from 'lucide-react';
+import { ToastProvider, useToast } from './components/ToastContext';
 import { 
   LineChart, 
   Line, 
@@ -41,28 +57,18 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { FirebaseProvider, useFirebase } from './components/FirebaseProvider';
 import { DeleteConfirmation } from './components/DeleteConfirmation';
-import { 
-  doc, 
-  getDoc, 
-  setDoc, 
-  collection, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc,
-  where,
-  query,
-  getDocs,
-  Timestamp
-} from 'firebase/firestore';
+import { Pagination } from './components/Pagination';
 import { 
   getAuth, 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
   signOut 
 } from 'firebase/auth';
-import { useFirestoreQuery } from './hooks/useFirestore';
-import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping } from './types';
+import { useDataQuery, where } from './hooks/useDataQuery';
+import { createSpreadsheet, updateSheetValues, getSheetValues } from './lib/sheets';
+import { saveData, deleteData, clearSheetMemoryCache } from './lib/dataService';
 import { cn } from './lib/utils';
+import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping } from './types';
 
 // --- Firestore Error Handling ---
 enum OperationType {
@@ -170,8 +176,9 @@ function SidebarItem({ icon: Icon, label, active, onClick }: { icon: any; label:
   );
 }
 
-function PublicAttendanceView({ onBack }: { onBack: () => void }) {
-  const { db } = useFirebase();
+function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, spreadsheetId?: string }) {
+  const { accessToken } = useFirebase();
+  const { showToast } = useToast();
   const [selectedLocation, setSelectedLocation] = useState<MosqueLocation | ''>('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedJamaah, setSelectedJamaah] = useState<Jamaah | null>(null);
@@ -182,9 +189,8 @@ function PublicAttendanceView({ onBack }: { onBack: () => void }) {
   const [success, setSuccess] = useState(false);
   const [showAlreadyAttended, setShowAlreadyAttended] = useState(false);
 
-  const { data: jamaahList } = useFirestoreQuery<Jamaah>(db, 'jamaah', 
-    selectedLocation ? [where('location', '==', selectedLocation)] : []
-  );
+  const { data: jamaahList } = useDataQuery<Jamaah>('jamaah');
+  const { data: attendanceList } = useDataQuery<Attendance>('attendance');
 
   const filteredJamaah = useMemo(() => {
     if (!searchTerm || selectedJamaah) return [];
@@ -195,7 +201,8 @@ function PublicAttendanceView({ onBack }: { onBack: () => void }) {
   }, [jamaahList, searchTerm, selectedJamaah]);
 
   const handleSubmit = async () => {
-    if (!selectedJamaah || !db) return;
+    if (!selectedJamaah) return;
+    
     setLoading(true);
     try {
       const today = new Date();
@@ -206,16 +213,14 @@ function PublicAttendanceView({ onBack }: { onBack: () => void }) {
       nextDay.setDate(today.getDate() + 1);
       const endOfDay = nextDay.getTime();
 
-      const attendanceRef = collection(db, 'attendance');
-      const q = query(
-        attendanceRef, 
-        where('jamaahId', '==', selectedJamaah.id),
-        where('date', '>=', startOfDay),
-        where('date', '<', endOfDay)
+      // Duplicate check against fetched attendance
+      const alreadyAttended = attendanceList.some(a => 
+        a.jamaahId === selectedJamaah.id && 
+        Number(a.date) >= startOfDay && 
+        Number(a.date) < endOfDay
       );
-      
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
+
+      if (alreadyAttended) {
         setShowAlreadyAttended(true);
         setLoading(false);
         return;
@@ -224,7 +229,7 @@ function PublicAttendanceView({ onBack }: { onBack: () => void }) {
       const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
       const dayName = days[new Date().getDay()];
 
-      await addDoc(collection(db, 'attendance'), {
+      const data = {
         jamaahId: selectedJamaah.id,
         jamaahName: selectedJamaah.name,
         location: selectedJamaah.location,
@@ -234,15 +239,18 @@ function PublicAttendanceView({ onBack }: { onBack: () => void }) {
         day: dayName,
         status,
         reason: status === 'izin' ? reason : ''
-      });
+      };
+
+      await saveData(null, accessToken, spreadsheetId, 'attendance', data);
       setSuccess(true);
+      showToast('Data presensi berhasil disimpan!', 'success');
       setSelectedJamaah(null);
       setSearchTerm('');
       setStatus('hadir');
       setReason('');
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      alert('Gagal mengirim absensi');
+      showToast(`Gagal mengirim absensi: ${error.message || 'Error tidak diketahui'}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -509,7 +517,7 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
   const [location, setLocation] = useState<MosqueLocation>('Kramat Batu');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { db, auth } = useFirebase();
+  const { auth, googleSignIn, accessToken, spreadsheetId, syncProfileFromSheet } = useFirebase();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -517,41 +525,65 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
     setLoading(true);
 
     if (!auth) {
-      setError('Firebase not initialized');
+      setError('Firebase belum diinisialisasi');
       setLoading(false);
       return;
     }
 
     try {
       if (isRegister) {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        if (db) {
-          await setDoc(doc(db, 'users', userCredential.user.uid), {
-            uid: userCredential.user.uid,
-            email,
-            displayName,
-            role,
-            location: role === 'pengurus' ? location : null,
-            isVerified: false,
-            createdAt: Date.now()
-          });
-          setError('Pendaftaran berhasil! Akun Anda sedang menunggu verifikasi dari admin.');
-          setIsRegister(false);
+        if (!displayName.trim()) {
+          setError('Silakan masukkan nama lengkap Anda.');
+          setLoading(false);
+          return;
+        }
+
+        const effectiveSpreadsheetId = spreadsheetId || (import.meta as any).env?.VITE_SPREADSHEET_ID || localStorage.getItem('app_spreadsheet_id') || '';
+        const effectiveToken = accessToken || localStorage.getItem('app_access_token') || null;
+
+        const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+        const newUid = userCredential.user.uid;
+
+        const newUserProfile = {
+          uid: newUid,
+          id: newUid,
+          email: email.trim(),
+          displayName: displayName.trim(),
+          role,
+          location: role === 'pengurus' ? location : null,
+          isVerified: false, // Akun baru memerlukan verifikasi dari admin!
+          createdAt: Date.now(),
+          spreadsheetId: effectiveSpreadsheetId || ''
+        };
+
+        // 1. Simpan ke local storage agar FirebaseProvider langsung menggunakannya
+        localStorage.setItem(`user_profile_${newUid}`, JSON.stringify(newUserProfile));
+
+        // 2. Simpan data lengkap ke Google Spreadsheet (sheet 'users')
+        try {
+          await saveData(null, effectiveToken, effectiveSpreadsheetId, 'users', newUserProfile, newUid);
+        } catch (saveErr) {
+          console.warn('[Register] Simpan ke spreadsheet:', saveErr);
+        }
+
+        // 3. Sinkronisasi profile
+        if (syncProfileFromSheet) {
+          await syncProfileFromSheet(newUid).catch(() => {});
         }
       } else {
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        if (db) {
-          const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
-          const userData = userDoc.data() as UserProfile;
-          if (!userData?.isVerified) {
-            await signOut(auth);
-            setError('Akun Anda belum diverifikasi oleh admin. Silakan hubungi admin untuk aktivasi.');
-            return;
-          }
-        }
+        await signInWithEmailAndPassword(auth, email.trim(), password);
       }
     } catch (err: any) {
-      setError(err.message || 'Gagal masuk');
+      const msg = err.message || 'Gagal masuk';
+      if (msg.includes('email-already-in-use')) {
+        setError('Email ini sudah terdaftar. Silakan masuk atau gunakan email lain.');
+      } else if (msg.includes('weak-password')) {
+        setError('Password terlalu pendek (minimal 6 karakter).');
+      } else if (msg.includes('invalid-credential') || msg.includes('user-not-found') || msg.includes('wrong-password')) {
+        setError('Email atau password tidak sesuai.');
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -570,6 +602,21 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
           </div>
           <h1 className="text-2xl font-bold text-slate-900">Sistem Manajemen Masjid</h1>
           <p className="text-slate-500 mt-2">Silakan masuk ke akun Anda</p>
+        </div>
+
+        <button 
+          type="button"
+          onClick={googleSignIn}
+          className="w-full py-4 bg-white border-2 border-slate-100 rounded-2xl flex items-center justify-center gap-4 hover:border-emerald-500 transition-all group mb-8 shadow-sm"
+        >
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-6 h-6" alt="Google" />
+          <span className="font-black uppercase tracking-widest text-slate-700 group-hover:text-emerald-600">Masuk dengan Google</span>
+        </button>
+
+        <div className="relative flex items-center gap-4 mb-8">
+          <div className="flex-grow h-px bg-slate-100"></div>
+          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Atau Gunakan Email</span>
+          <div className="flex-grow h-px bg-slate-100"></div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -676,18 +723,47 @@ function LoginView({ onAttendanceMode }: { onAttendanceMode: () => void }) {
 
 // --- Dashboard Sub-Views ---
 
-function ActivityImageSlider({ images }: { images: string[] }) {
+export function parseImageUrls(input: any): string[] {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input.filter((it): it is string => typeof it === 'string' && it.trim().length > 0);
+  }
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((it): it is string => typeof it === 'string' && it.trim().length > 0);
+        }
+      } catch (e) {}
+    }
+    if (trimmed.includes(',')) {
+      return trimmed.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+    }
+    return [trimmed];
+  }
+  return [];
+}
+
+function ActivityImageSlider({ images }: { images?: any }) {
+  const imageList = useMemo(() => parseImageUrls(images), [images]);
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
-    if (!images || images.length <= 1) return;
+    setIndex(0);
+  }, [imageList.length]);
+
+  useEffect(() => {
+    if (imageList.length <= 1) return;
     const interval = setInterval(() => {
-      setIndex((prev) => (prev + 1) % images.length);
+      setIndex((prev) => (prev + 1) % imageList.length);
     }, 4000);
     return () => clearInterval(interval);
-  }, [images]);
+  }, [imageList.length]);
 
-  if (!images || images.length === 0) {
+  if (imageList.length === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center text-slate-400 bg-slate-100">
         <Calendar className="w-12 h-12" />
@@ -695,12 +771,14 @@ function ActivityImageSlider({ images }: { images: string[] }) {
     );
   }
 
+  const activeSrc = imageList[index] || imageList[0];
+
   return (
     <div className="relative w-full h-full overflow-hidden group">
       <AnimatePresence initial={false} mode="wait">
         <motion.img
-          key={index}
-          src={images[index]}
+          key={activeSrc}
+          src={activeSrc}
           initial={{ opacity: 0, scale: 1.1 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0 }}
@@ -708,9 +786,9 @@ function ActivityImageSlider({ images }: { images: string[] }) {
           className="absolute inset-0 w-full h-full object-cover"
         />
       </AnimatePresence>
-      {images.length > 1 && (
+      {imageList.length > 1 && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
-          {images.map((_, i) => (
+          {imageList.map((_, i) => (
             <div 
               key={i} 
               className={cn(
@@ -727,11 +805,11 @@ function ActivityImageSlider({ images }: { images: string[] }) {
 
 function Overview({ profile }: { profile: UserProfile }) {
   const { db } = useFirebase();
-  const filter = useMemo(() => profile.role === 'pengurus' ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
-  const { data: jamaah } = useFirestoreQuery<Jamaah>(db, 'jamaah', filter);
-  const { data: allAssets } = useFirestoreQuery<Asset>(db, 'assets', filter);
-  const { data: activities } = useFirestoreQuery<Activity>(db, 'activities', filter);
-  const { data: stats } = useFirestoreQuery<FacilityStat>(db, 'facility_stats');
+  const filter = useMemo(() => (profile.role === 'pengurus' && profile.location && (profile.location as string) !== 'Seluruh Lokasi') ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
+  const { data: jamaah } = useDataQuery<Jamaah>('jamaah', filter);
+  const { data: allAssets } = useDataQuery<Asset>('assets', filter);
+  const { data: activities } = useDataQuery<Activity>('activities', filter);
+  const { data: stats } = useDataQuery<FacilityStat>('facility_stats', []);
 
   const barangAssets = useMemo(() => allAssets.filter(a => !a.assetType || a.assetType === 'barang'), [allAssets]);
   const tanahAssets = useMemo(() => allAssets.filter(a => a.assetType === 'tanah'), [allAssets]);
@@ -918,19 +996,34 @@ const LOCATION_PREFIXES: Record<string, string> = {
   'Antena': 'AN'
 };
 
+const DAPUKAN_OPTIONS = [
+  "Ides", "Wides", "Koor. Lupg", "Bosdes", "Mubdes", "Tim Aghniya'", "Ku Des", 
+  "Tim Bk", "Tim Bacaan", "Tim Basyiron Wa Nadziron", "Tim Benda Sb", "Tim DhuaFa'", 
+  "Tim Faraoid", "Tim Gambuh", "Tim Haji", "Tim Keluarga Bahagia", "Tim Kematian", 
+  "Tim Manula", "Tim Mondar Mandir", "Tim Muballigh", "Tim Organisasi", 
+  "Tim Pembangunan", "Tim Pkw", "Tim Penyelesaian", "Tim Pramuka", "Tim Sarjana", 
+  "Tim Ub", "Tim Zakat", "Tim Cai & Remaja (Karemdes)", "Keputrian Des", 
+  "Ikel", "Wikel", "Pjkbm", "Boskel", "Mubkel", "Ku Kel", "Pakar Pendidik", "Ptk", "Keputkel"
+];
+
 function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserProfile, formTrigger?: string | null, onFormTriggered?: () => void }) {
-  const { db } = useFirebase();
-  const filter = useMemo(() => profile.role === 'pengurus' ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
-  const { data: jamaah, loading } = useFirestoreQuery<Jamaah>(db, 'jamaah', filter);
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
+  const filter = useMemo(() => (profile.role === 'pengurus' && profile.location && (profile.location as string) !== 'Seluruh Lokasi') ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
+  const { data: jamaah, loading } = useDataQuery<Jamaah>('jamaah', filter);
   const [searchTerm, setSearchTerm] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingJamaah, setEditingJamaah] = useState<Jamaah | null>(null);
+  const [selectedJamaahDetail, setSelectedJamaahDetail] = useState<Jamaah | null>(null);
   const [base64Image, setBase64Image] = useState<string | null>(null);
   const [isKK, setIsKK] = useState(true);
   const [selectedKKId, setSelectedKKId] = useState<string>('');
-  const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
+  const [selectedDapukan, setSelectedDapukan] = useState<string[]>([]);
+  const [dapukanFilter, setDapukanFilter] = useState('');
+  const [hasHajjStatus, setHasHajjStatus] = useState<string>('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [formTab, setFormTab] = useState<'identitas' | 'keluarga' | 'pendidikan' | 'dapukan' | 'keilmuan'>('identitas');
 
   useEffect(() => {
     if (formTrigger === 'jamaah') {
@@ -939,6 +1032,9 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       setBase64Image(null);
       setIsKK(true);
       setSelectedKKId('');
+      setSelectedDapukan([]);
+      setHasHajjStatus('');
+      setFormTab('identitas');
       onFormTriggered?.();
     }
   }, [formTrigger]);
@@ -956,16 +1052,44 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
 
   const filteredJamaah = jamaah.filter(j => 
     j.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    j.phone.includes(searchTerm) ||
+    j.nickname?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    j.phone?.includes(searchTerm) ||
     j.memberId?.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const headsOfFamily = jamaah.filter(j => j.isKK && (profile.role === 'admin' ? true : j.location === profile.location));
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm]);
+
+  const totalPages = Math.ceil(filteredJamaah.length / pageSize) || 1;
+  const paginatedJamaah = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredJamaah.slice(start, start + pageSize);
+  }, [filteredJamaah, currentPage, pageSize]);
+
+  const headsOfFamily = jamaah.filter(j => (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') && (profile.role === 'admin' || !profile.location || (profile.location as string) === 'Seluruh Lokasi' ? true : j.location === profile.location));
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!db) return;
     const formData = new FormData(e.currentTarget);
+
+    const nameVal = (formData.get('name') as string || '').trim();
+    if (!nameVal) {
+      setFormTab('identitas');
+      showToast('Nama lengkap wajib diisi', 'error');
+      return;
+    }
+
+    const phoneVal = (formData.get('phone') as string || '').trim();
+    if (!phoneVal) {
+      setFormTab('identitas');
+      showToast('Nomor telepon/WA wajib diisi', 'error');
+      return;
+    }
+
     const location = profile.role === 'pengurus' ? (profile.location as MosqueLocation) : (formData.get('location') as MosqueLocation);
     
     let memberId = editingJamaah?.memberId || '';
@@ -980,7 +1104,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     if (isStructureChanged) {
       const prefix = LOCATION_PREFIXES[location] || 'JM';
       if (isKK) {
-        const kkInLocation = jamaah.filter(j => j.location === location && j.isKK);
+        const kkInLocation = jamaah.filter(j => j.location === location && (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE'));
         let maxNum = 0;
         kkInLocation.forEach(kk => {
           const numPart = kk.memberId.replace(prefix, '');
@@ -994,7 +1118,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       } else {
         const kk = jamaah.find(j => j.memberId === selectedKKId);
         if (!kk) {
-          alert('Pilih Kepala Keluarga terlebih dahulu');
+          showToast('Pilih Kepala Keluarga terlebih dahulu', 'error');
           return;
         }
         const familyMembers = jamaah.filter(j => j.kkId === selectedKKId);
@@ -1008,27 +1132,62 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       }
     }
 
-    const data = {
+    const originAddress = (formData.get('originAddress') as string) || '';
+    const currentAddress = (formData.get('currentAddress') as string) || '';
+
+    const data: Jamaah = {
+      id: editingJamaah?.id || '',
       memberId,
-      name: formData.get('name') as string,
-      phone: formData.get('phone') as string,
-      address: formData.get('address') as string,
+      name: (formData.get('name') as string) || '',
+      nickname: (formData.get('nickname') as string) || '',
+      gender: (formData.get('gender') as string) || '',
+      originAddress,
+      currentAddress,
+      address: currentAddress || originAddress,
+      phone: (formData.get('phone') as string) || '',
       location,
-      category: formData.get('category') as JamaahCategory,
-      isKK: isKK,
+      category: (formData.get('category') as JamaahCategory) || 'UMUM',
+      isKK,
       kkId: finalKKId,
       familyOrder,
-      positions: selectedPositions,
-      photoUrl: base64Image || editingJamaah?.photoUrl || null,
-      registeredAt: editingJamaah ? editingJamaah.registeredAt : Date.now()
+      dapukan: selectedDapukan,
+      positions: selectedDapukan,
+      photoUrl: base64Image || editingJamaah?.photoUrl || undefined,
+      registeredAt: editingJamaah ? editingJamaah.registeredAt : Date.now(),
+      placeOfBirth: (formData.get('placeOfBirth') as string) || '',
+      dateOfBirth: (formData.get('dateOfBirth') as string) || '',
+      fatherName: (formData.get('fatherName') as string) || '',
+      motherName: (formData.get('motherName') as string) || '',
+      parentPhone: (formData.get('parentPhone') as string) || '',
+      lastEducation: (formData.get('lastEducation') as string) || '',
+      majorOrClass: (formData.get('majorOrClass') as string) || '',
+      schoolOrUniversity: (formData.get('schoolOrUniversity') as string) || '',
+      currentJob: (formData.get('currentJob') as string) || '',
+      workplaceAddress: (formData.get('workplaceAddress') as string) || '',
+      maritalStatus: (formData.get('maritalStatus') as string) || '',
+      marriageYear: (formData.get('marriageYear') as string) || '',
+      spouseName: (formData.get('spouseName') as string) || '',
+      hasJurusKeras: (formData.get('hasJurusKeras') as string) || '',
+      hasJurusHalus: (formData.get('hasJurusHalus') as string) || '',
+      bloodType: (formData.get('bloodType') as string) || '',
+      hasUbShares: (formData.get('hasUbShares') as string) || '',
+      previousDapukan: (formData.get('previousDapukan') as string) || '',
+      isMubaligh: (formData.get('isMubaligh') as string) || '',
+      hasHajj: (formData.get('hasHajj') as string) || '',
+      hajjPortionNumber: (formData.get('hajjPortionNumber') as string) || '',
+      plannedHajjYear: (formData.get('plannedHajjYear') as string) || '',
+      hajjName: (formData.get('hajjName') as string) || '',
+      hajjYear: (formData.get('hajjYear') as string) || '',
+      medicalHistory: (formData.get('medicalHistory') as string) || ''
     };
 
-    if (editingJamaah) {
-      await updateDoc(doc(db, 'jamaah', editingJamaah.id), data as any);
-    } else {
-      await addDoc(collection(db, 'jamaah'), data);
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'jamaah', data, editingJamaah?.id);
+      showToast(`Data jamaah ${data.name} berhasil disimpan!`, 'success');
+      closeForm();
+    } catch (err: any) {
+      showToast(`Gagal menyimpan data: ${err.message}`, 'error');
     }
-    closeForm();
   };
 
   const closeForm = () => {
@@ -1037,15 +1196,22 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     setBase64Image(null);
     setIsKK(true);
     setSelectedKKId('');
-    setSelectedPositions([]);
+    setSelectedDapukan([]);
+    setHasHajjStatus('');
+    setFormTab('identitas');
   };
 
   const openEdit = (j: Jamaah) => {
     setEditingJamaah(j);
     setBase64Image(j.photoUrl || null);
-    setIsKK(j.isKK);
+    setIsKK(j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE');
     setSelectedKKId(j.kkId || '');
-    setSelectedPositions(j.positions || []);
+    const currentDapukan = Array.isArray(j.dapukan) && j.dapukan.length > 0 
+      ? j.dapukan 
+      : (Array.isArray(j.positions) ? j.positions : []);
+    setSelectedDapukan(currentDapukan);
+    setHasHajjStatus(j.hasHajj || '');
+    setFormTab('identitas');
     setShowForm(true);
   };
 
@@ -1057,7 +1223,10 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
           <p className="text-slate-500">Kelola data jamaah {profile.role === 'pengurus' ? `di ${profile.location}` : 'seluruh lokasi'}</p>
         </div>
         <button 
-          onClick={() => setShowForm(true)}
+          onClick={() => {
+            closeForm();
+            setShowForm(true);
+          }}
           className="bg-emerald-600 text-white px-6 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200"
         >
           <Plus className="w-5 h-5" />
@@ -1071,7 +1240,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input 
               type="text" 
-              placeholder="Cari jamaah..." 
+              placeholder="Cari jamaah (Nama, Panggilan, ID, Telepon)..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
@@ -1084,7 +1253,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
               <tr>
                 <th className="px-6 py-4 text-center">Foto</th>
                 <th className="px-6 py-4">ID / Nama</th>
-                <th className="px-6 py-4">Jabatan</th>
+                <th className="px-6 py-4">Dapukan</th>
                 <th className="px-6 py-4">Kategori</th>
                 <th className="px-6 py-4">Telepon</th>
                 <th className="px-6 py-4">Lokasi</th>
@@ -1093,85 +1262,121 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">Memuat data...</td></tr>
-              ) : filteredJamaah.length === 0 ? (
-                <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">Tidak ada data ditemukan</td></tr>
-              ) : filteredJamaah.map((j) => (
-                <tr key={j.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-6 py-4">
-                    <div className="w-10 h-10 rounded-full bg-slate-100 overflow-hidden flex items-center justify-center mx-auto">
-                      {j.photoUrl ? (
-                        <img src={j.photoUrl} alt={j.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <Users className="w-5 h-5 text-slate-400" />
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex flex-col">
-                      <span className="text-xs font-bold text-emerald-600">{j.memberId}</span>
-                      <span className="font-semibold text-slate-900">{j.name}</span>
-                      {j.isKK && <span className="text-[10px] text-slate-400 font-medium">Kepala Keluarga</span>}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex flex-wrap gap-1">
-                      {j.positions?.map(p => (
-                        <span key={p} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[9px] font-black uppercase whitespace-nowrap">
-                          {p}
-                        </span>
-                      )) || <span className="text-[10px] text-slate-300 italic">-</span>}
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={cn(
-                      "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                      j.category === 'UMUM' ? "bg-slate-100 text-slate-600" :
-                      j.category === 'ACR' ? "bg-emerald-100 text-emerald-700" :
-                      j.category === 'APR' ? "bg-blue-100 text-blue-700" :
-                      "bg-purple-100 text-purple-700"
-                    )}>
-                      {j.category}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-slate-600 text-sm">{j.phone}</td>
-                  <td className="px-6 py-4">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold">
-                      <MapPin className="w-3 h-3" /> {j.location}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex gap-3">
-                      <button 
-                        onClick={() => openEdit(j)}
-                        className="text-emerald-600 hover:text-emerald-700 font-medium text-sm"
-                      >
-                        Edit
-                      </button>
-                      <button 
-                        onClick={() => setDeleteId(j.id)}
-                        className="text-red-500 hover:text-red-700 font-medium text-sm"
-                      >
-                        Hapus
-                      </button>
+                <tr>
+                  <td colSpan={7} className="px-6 py-12 text-center">
+                    <div className="flex flex-col items-center justify-center gap-3">
+                      <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+                      <p className="text-sm font-semibold text-slate-700">Memuat data jamaah dari Google Sheets...</p>
+                      <p className="text-xs text-slate-400">Harap tunggu sebentar</p>
                     </div>
                   </td>
                 </tr>
-              ))}
+              ) : filteredJamaah.length === 0 ? (
+                <tr><td colSpan={7} className="px-6 py-8 text-center text-slate-400">Tidak ada data ditemukan</td></tr>
+              ) : paginatedJamaah.map((j) => {
+                const dapukanList = j.dapukan || j.positions || [];
+                return (
+                  <tr key={j.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="w-10 h-10 rounded-full bg-slate-100 overflow-hidden flex items-center justify-center mx-auto">
+                        {j.photoUrl ? (
+                          <img src={j.photoUrl} alt={j.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <Users className="w-5 h-5 text-slate-400" />
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold text-emerald-600">{j.memberId}</span>
+                        <span className="font-semibold text-slate-900">
+                          {j.name} {j.nickname ? <span className="text-xs font-normal text-slate-500">({j.nickname})</span> : null}
+                        </span>
+                        {(j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') && <span className="text-[10px] text-emerald-600 font-medium">Kepala Keluarga</span>}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-wrap gap-1 max-w-xs">
+                        {dapukanList.length > 0 ? (
+                          dapukanList.map(p => (
+                            <span key={p} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[9px] font-bold uppercase whitespace-nowrap">
+                              {p}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-[10px] text-slate-300 italic">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={cn(
+                        "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
+                        j.category === 'UMUM' ? "bg-slate-100 text-slate-600" :
+                        j.category === 'ACR' ? "bg-emerald-100 text-emerald-700" :
+                        j.category === 'APR' ? "bg-blue-100 text-blue-700" :
+                        "bg-purple-100 text-purple-700"
+                      )}>
+                        {j.category}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-slate-600 text-sm">{j.phone || '-'}</td>
+                    <td className="px-6 py-4">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-semibold">
+                        <MapPin className="w-3 h-3" /> {j.location}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex justify-center gap-2">
+                        <button 
+                          onClick={() => setSelectedJamaahDetail(j)}
+                          className="p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
+                          title="Lihat Detail"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => openEdit(j)}
+                          className="text-emerald-600 hover:text-emerald-700 font-medium text-sm"
+                        >
+                          Edit
+                        </button>
+                        <button 
+                          onClick={() => setDeleteId(j.id)}
+                          className="text-red-500 hover:text-red-700 font-medium text-sm"
+                        >
+                          Hapus
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
+        <Pagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filteredJamaah.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+          onPageSizeChange={setPageSize}
+          className="px-6 py-4 bg-white"
+        />
       </div>
 
       <DeleteConfirmation 
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => {
-          if (!deleteId || !db) return;
+          if (!deleteId) return;
           setIsDeleting(true);
           try {
-            await deleteDoc(doc(db, 'jamaah', deleteId));
+            await deleteData(null, accessToken, spreadsheetId, 'jamaah', deleteId);
+            showToast('Data jamaah berhasil dihapus!', 'success');
             setDeleteId(null);
+          } catch (err: any) {
+            showToast(`Gagal menghapus: ${err.message}`, 'error');
           } finally {
             setIsDeleting(false);
           }
@@ -1181,6 +1386,157 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
         message="Apakah Anda yakin ingin menghapus data jamaah ini? Data yang dihapus tidak dapat dikembalikan."
       />
 
+      {/* Detail Jamaah Modal */}
+      <AnimatePresence>
+        {selectedJamaahDetail && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl p-6 sm:p-8 w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <div className="flex justify-between items-start mb-6 border-b pb-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-200">
+                    {selectedJamaahDetail.photoUrl ? (
+                      <img src={selectedJamaahDetail.photoUrl} className="w-full h-full object-cover" />
+                    ) : (
+                      <Users className="w-8 h-8 text-slate-400" />
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">{selectedJamaahDetail.memberId}</span>
+                    <h3 className="text-xl font-bold text-slate-900">{selectedJamaahDetail.name} {selectedJamaahDetail.nickname ? `(${selectedJamaahDetail.nickname})` : ''}</h3>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold">{selectedJamaahDetail.location}</span>
+                      <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">{selectedJamaahDetail.category}</span>
+                    </div>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSelectedJamaahDetail(null)}
+                  className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-6 text-sm text-slate-700">
+                {/* Identitas Diri */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2">
+                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-emerald-700">
+                    <Users className="w-4 h-4" /> Identitas Diri & Kontak
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <div><span className="text-slate-400 block text-xs">Jenis Kelamin</span> <span className="font-semibold">{selectedJamaahDetail.gender || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Tempat, Tgl Lahir</span> <span className="font-semibold">{selectedJamaahDetail.placeOfBirth || '-'}, {selectedJamaahDetail.dateOfBirth || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Golongan Darah</span> <span className="font-semibold">{selectedJamaahDetail.bloodType || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">No. Telepon / WA</span> <span className="font-semibold">{selectedJamaahDetail.phone || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">No. Ortu yang Bisa Dihubungi</span> <span className="font-semibold">{selectedJamaahDetail.parentPhone || '-'}</span></div>
+                    <div className="sm:col-span-2"><span className="text-slate-400 block text-xs">Alamat Asal</span> <span className="font-semibold">{selectedJamaahDetail.originAddress || '-'}</span></div>
+                    <div className="sm:col-span-2"><span className="text-slate-400 block text-xs">Alamat Saat Ini</span> <span className="font-semibold">{selectedJamaahDetail.currentAddress || selectedJamaahDetail.address || '-'}</span></div>
+                  </div>
+                </div>
+
+                {/* Keluarga */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2">
+                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-emerald-700">
+                    <Home className="w-4 h-4" /> Informasi Keluarga
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <div><span className="text-slate-400 block text-xs">Nama Ayah</span> <span className="font-semibold">{selectedJamaahDetail.fatherName || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Nama Ibu</span> <span className="font-semibold">{selectedJamaahDetail.motherName || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Status Pernikahan</span> <span className="font-semibold">{selectedJamaahDetail.maritalStatus || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Tahun Nikah</span> <span className="font-semibold">{selectedJamaahDetail.marriageYear || '-'}</span></div>
+                    <div className="sm:col-span-2"><span className="text-slate-400 block text-xs">Nama Suami/Istri</span> <span className="font-semibold">{selectedJamaahDetail.spouseName || '-'}</span></div>
+                  </div>
+                </div>
+
+                {/* Pendidikan & Kerja */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2">
+                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-emerald-700">
+                    <GraduationCap className="w-4 h-4" /> Pendidikan & Pekerjaan
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <div><span className="text-slate-400 block text-xs">Pendidikan Terakhir</span> <span className="font-semibold">{selectedJamaahDetail.lastEducation || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Kelas / Jurusan</span> <span className="font-semibold">{selectedJamaahDetail.majorOrClass || '-'}</span></div>
+                    <div className="sm:col-span-2"><span className="text-slate-400 block text-xs">Sekolah / Universitas</span> <span className="font-semibold">{selectedJamaahDetail.schoolOrUniversity || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Pekerjaan Saat Ini</span> <span className="font-semibold">{selectedJamaahDetail.currentJob || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Alamat Tempat Kerja</span> <span className="font-semibold">{selectedJamaahDetail.workplaceAddress || '-'}</span></div>
+                  </div>
+                </div>
+
+                {/* Dapukan & Keorganisasian */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2">
+                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-emerald-700">
+                    <Briefcase className="w-4 h-4" /> Dapukan & Keorganisasian
+                  </h4>
+                  <div className="space-y-2 pt-2">
+                    <div>
+                      <span className="text-slate-400 block text-xs mb-1">Dapukan Saat Ini</span>
+                      <div className="flex flex-wrap gap-1">
+                        {(selectedJamaahDetail.dapukan || selectedJamaahDetail.positions || []).length > 0 ? (
+                          (selectedJamaahDetail.dapukan || selectedJamaahDetail.positions || []).map(d => (
+                            <span key={d} className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-xs">{d}</span>
+                          ))
+                        ) : (
+                          <span className="font-semibold italic text-slate-400">Belum ada dapukan</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                      <div><span className="text-slate-400 block text-xs">Dapukan Sebelumnya</span> <span className="font-semibold">{selectedJamaahDetail.previousDapukan || '-'}</span></div>
+                      <div><span className="text-slate-400 block text-xs">Status Mubaligh</span> <span className="font-semibold">{selectedJamaahDetail.isMubaligh || '-'}</span></div>
+                      <div><span className="text-slate-400 block text-xs">Punya Saham UB</span> <span className="font-semibold">{selectedJamaahDetail.hasUbShares || '-'}</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Keilmuan, Haji & Kesehatan */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2">
+                  <h4 className="font-bold text-slate-900 flex items-center gap-2 text-emerald-700">
+                    <HeartPulse className="w-4 h-4" /> Keilmuan, Haji & Kesehatan
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <div><span className="text-slate-400 block text-xs">Sudah Jurus Keras</span> <span className="font-semibold">{selectedJamaahDetail.hasJurusKeras || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Sudah Jurus Halus</span> <span className="font-semibold">{selectedJamaahDetail.hasJurusHalus || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Sudah Haji</span> <span className="font-semibold">{selectedJamaahDetail.hasHajj || '-'}</span></div>
+                    {selectedJamaahDetail.hasHajj === 'Sudah' ? (
+                      <>
+                        <div><span className="text-slate-400 block text-xs">Nama Haji</span> <span className="font-semibold">{selectedJamaahDetail.hajjName || '-'}</span></div>
+                        <div><span className="text-slate-400 block text-xs">Tahun Haji</span> <span className="font-semibold">{selectedJamaahDetail.hajjYear || '-'}</span></div>
+                      </>
+                    ) : (
+                      <>
+                        <div><span className="text-slate-400 block text-xs">No. Porsi Haji</span> <span className="font-semibold">{selectedJamaahDetail.hajjPortionNumber || '-'}</span></div>
+                        <div><span className="text-slate-400 block text-xs">Rencana Tahun Berangkat</span> <span className="font-semibold">{selectedJamaahDetail.plannedHajjYear || '-'}</span></div>
+                      </>
+                    )}
+                    <div className="sm:col-span-2"><span className="text-slate-400 block text-xs">Riwayat Penyakit</span> <span className="font-semibold">{selectedJamaahDetail.medicalHistory || '-'}</span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end">
+                <button 
+                  onClick={() => setSelectedJamaahDetail(null)}
+                  className="px-6 py-2.5 rounded-xl bg-slate-100 font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
+                >
+                  Tutup
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Form Tambah/Edit Jamaah Modal */}
       <AnimatePresence>
         {showForm && (
           <motion.div 
@@ -1193,107 +1549,428 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
               initial={{ scale: 0.95, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 20 }}
-              className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="bg-white rounded-3xl p-6 sm:p-8 w-full max-w-3xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden"
             >
-              <h3 className="text-xl font-bold mb-6">{editingJamaah ? 'Edit Data Jamaah' : 'Tambah Jamaah Baru'}</h3>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="flex justify-center mb-6">
-                  <label className="relative group cursor-pointer">
-                    <div className="w-24 h-24 rounded-full bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden transition-all group-hover:border-emerald-500">
-                      {base64Image ? (
-                        <img src={base64Image} className="w-full h-full object-cover" />
-                      ) : (
-                        <Plus className="w-8 h-8 text-slate-400 group-hover:text-emerald-500" />
-                      )}
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold">{editingJamaah ? 'Edit Data Jamaah' : 'Tambah Jamaah Baru'}</h3>
+                <button type="button" onClick={closeForm} className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Form Navigation Tabs */}
+              <div className="flex border-b border-slate-100 gap-1 overflow-x-auto pb-2 mb-4 scrollbar-none">
+                {[
+                  { id: 'identitas', label: '1. Identitas & Kontak' },
+                  { id: 'keluarga', label: '2. Orang Tua & Keluarga' },
+                  { id: 'pendidikan', label: '3. Pendidikan & Pekerjaan' },
+                  { id: 'dapukan', label: '4. Dapukan (Checklist)' },
+                  { id: 'keilmuan', label: '5. Keilmuan, Haji & Kesehatan' },
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setFormTab(tab.id as any)}
+                    className={cn(
+                      "px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all",
+                      formTab === tab.id
+                        ? "bg-emerald-600 text-white shadow-md shadow-emerald-200"
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto space-y-4 pr-1">
+                {/* TAB 1: IDENTITAS & KONTAK */}
+                <div className={cn("space-y-4", formTab === 'identitas' ? 'block' : 'hidden')}>
+                  <div className="flex justify-center mb-4">
+                    <label className="relative group cursor-pointer">
+                      <div className="w-24 h-24 rounded-full bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center overflow-hidden transition-all group-hover:border-emerald-500">
+                        {base64Image ? (
+                          <img src={base64Image} className="w-full h-full object-cover" />
+                        ) : (
+                          <Plus className="w-8 h-8 text-slate-400 group-hover:text-emerald-500" />
+                        )}
+                      </div>
+                      <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
+                      <div className="absolute -bottom-1 -right-1 bg-emerald-600 text-white p-1.5 rounded-full shadow-lg">
+                        <Plus className="w-3 h-3" />
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Nama Lengkap *</label>
+                      <input name="name" defaultValue={editingJamaah?.name} className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
                     </div>
-                    <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
-                    <div className="absolute -bottom-1 -right-1 bg-emerald-600 text-white p-1.5 rounded-full shadow-lg">
-                      <Plus className="w-3 h-3" />
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Nama Panggilan</label>
+                      <input name="nickname" defaultValue={editingJamaah?.nickname} placeholder="Contoh: Budi" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
                     </div>
-                  </label>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Nama</label>
-                  <input name="name" defaultValue={editingJamaah?.name} required className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none" />
-                </div>
-                <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
-                  <input 
-                    type="checkbox" 
-                    id="isKK" 
-                    checked={isKK} 
-                    onChange={(e) => setIsKK(e.target.checked)}
-                    className="w-4 h-4 text-emerald-600"
-                  />
-                  <label htmlFor="isKK" className="text-sm font-semibold text-slate-700">Kepala Keluarga (KK)</label>
-                </div>
-                {!isKK && (
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Tempat Lahir</label>
+                      <input name="placeOfBirth" defaultValue={editingJamaah?.placeOfBirth} placeholder="Contoh: Jakarta" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Tanggal Lahir</label>
+                      <input type="date" name="dateOfBirth" defaultValue={editingJamaah?.dateOfBirth} className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Jenis Kelamin</label>
+                      <select name="gender" defaultValue={editingJamaah?.gender || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white">
+                        <option value="">Pilih Jenis Kelamin...</option>
+                        <option value="Laki-laki">Laki-laki</option>
+                        <option value="Perempuan">Perempuan</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Golongan Darah</label>
+                      <select name="bloodType" defaultValue={editingJamaah?.bloodType || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white">
+                        <option value="">Pilih Golongan Darah...</option>
+                        <option value="A">A</option>
+                        <option value="B">B</option>
+                        <option value="AB">AB</option>
+                        <option value="O">O</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Telepon / WA *</label>
+                      <input type="tel" name="phone" defaultValue={editingJamaah?.phone} className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border">
+                    <input 
+                      type="checkbox" 
+                      id="isKK" 
+                      checked={isKK} 
+                      onChange={(e) => setIsKK(e.target.checked)}
+                      className="w-4 h-4 text-emerald-600 rounded"
+                    />
+                    <label htmlFor="isKK" className="text-sm font-semibold text-slate-700">Kepala Keluarga (KK)</label>
+                  </div>
+
+                  {!isKK && (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Pilih Kepala Keluarga *</label>
+                      <select 
+                        value={selectedKKId} 
+                        onChange={(e) => setSelectedKKId(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white"
+                      >
+                        <option value="">Pilih KK...</option>
+                        {headsOfFamily.filter(kk => kk.id !== editingJamaah?.id).map(kk => (
+                          <option key={kk.id} value={kk.memberId}>{kk.memberId} - {kk.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
+                      <select name="category" defaultValue={editingJamaah?.category || 'UMUM'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="UMUM">UMUM</option>
+                        <option value="ACR">ACR (Anak Caberawit)</option>
+                        <option value="APR">APR (Anak Pra Remaja)</option>
+                        <option value="GPN">GPN (Generus Pra Nikah)</option>
+                      </select>
+                    </div>
+                    {profile.role === 'admin' && (
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Masjid</label>
+                        <select name="location" defaultValue={editingJamaah?.location || 'Kramat Batu'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                          {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
+                            <option key={l} value={l}>{l}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
                   <div>
-                    <label className="block text-sm font-medium mb-1">Pilih Kepala Keluarga</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Asal</label>
+                    <textarea name="originAddress" defaultValue={editingJamaah?.originAddress} rows={2} placeholder="Alamat asal/daerah..." className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Saat Ini</label>
+                    <textarea name="currentAddress" defaultValue={editingJamaah?.currentAddress || editingJamaah?.address} rows={2} placeholder="Alamat tinggal sekarang..." className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div className="pt-2 flex justify-end">
+                    <button type="button" onClick={() => setFormTab('keluarga')} className="px-6 py-2 rounded-xl bg-slate-900 text-white font-semibold text-xs">
+                      Lanjut: Orang Tua & Keluarga &rarr;
+                    </button>
+                  </div>
+                </div>
+
+                {/* TAB 2: ORANG TUA & KELUARGA */}
+                <div className={cn("space-y-4", formTab === 'keluarga' ? 'block' : 'hidden')}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ayah</label>
+                      <input name="fatherName" defaultValue={editingJamaah?.fatherName} placeholder="Nama Ayah Kandung" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Nama Ibu</label>
+                      <input name="motherName" defaultValue={editingJamaah?.motherName} placeholder="Nama Ibu Kandung" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nomor Ortu yang Bisa Dihubungi</label>
+                    <input type="tel" name="parentPhone" defaultValue={editingJamaah?.parentPhone} placeholder="No. Telepon / WA Orang Tua" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
+                      <select name="maritalStatus" defaultValue={editingJamaah?.maritalStatus || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="">Pilih Status...</option>
+                        <option value="Muda Mudi">Muda Mudi</option>
+                        <option value="Nikah">Nikah</option>
+                        <option value="Janda">Janda</option>
+                        <option value="Duda">Duda</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Tahun Nikah</label>
+                      <input name="marriageYear" defaultValue={editingJamaah?.marriageYear} placeholder="Contoh: 2018" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Suami / Istri</label>
+                    <input name="spouseName" defaultValue={editingJamaah?.spouseName} placeholder="Nama Suami atau Istri" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div className="pt-2 flex justify-between">
+                    <button type="button" onClick={() => setFormTab('identitas')} className="px-4 py-2 rounded-xl border text-slate-600 font-semibold text-xs">
+                      &larr; Kembali
+                    </button>
+                    <button type="button" onClick={() => setFormTab('pendidikan')} className="px-6 py-2 rounded-xl bg-slate-900 text-white font-semibold text-xs">
+                      Lanjut: Pendidikan & Kerja &rarr;
+                    </button>
+                  </div>
+                </div>
+
+                {/* TAB 3: PENDIDIKAN & PEKERJAAN */}
+                <div className={cn("space-y-4", formTab === 'pendidikan' ? 'block' : 'hidden')}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Pendidikan Terakhir</label>
+                      <select name="lastEducation" defaultValue={editingJamaah?.lastEducation || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="">Pilih Pendidikan...</option>
+                        <option value="SD">SD</option>
+                        <option value="SMP">SMP</option>
+                        <option value="SMA">SMA</option>
+                        <option value="D1">D1</option>
+                        <option value="D2">D2</option>
+                        <option value="D3">D3</option>
+                        <option value="S1">S1</option>
+                        <option value="S2">S2</option>
+                        <option value="S3">S3</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Kelas / Jurusan</label>
+                      <input name="majorOrClass" defaultValue={editingJamaah?.majorOrClass} placeholder="Contoh: Teknik Informatika / XII IPA" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Nama Sekolah / Universitas</label>
+                    <input name="schoolOrUniversity" defaultValue={editingJamaah?.schoolOrUniversity} placeholder="Contoh: Universitas Indonesia" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Pekerjaan Saat Ini</label>
+                    <input name="currentJob" defaultValue={editingJamaah?.currentJob} placeholder="Contoh: Karyawan Swasta / PNS" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Alamat Tempat Kerja</label>
+                    <textarea name="workplaceAddress" defaultValue={editingJamaah?.workplaceAddress} rows={2} placeholder="Alamat kantor/perusahaan..." className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div className="pt-2 flex justify-between">
+                    <button type="button" onClick={() => setFormTab('keluarga')} className="px-4 py-2 rounded-xl border text-slate-600 font-semibold text-xs">
+                      &larr; Kembali
+                    </button>
+                    <button type="button" onClick={() => setFormTab('dapukan')} className="px-6 py-2 rounded-xl bg-slate-900 text-white font-semibold text-xs">
+                      Lanjut: Dapukan (Checklist) &rarr;
+                    </button>
+                  </div>
+                </div>
+
+                {/* TAB 4: DAPUKAN (CHECKLIST MULTI-SELECT) */}
+                <div className={cn("space-y-4", formTab === 'dapukan' ? 'block' : 'hidden')}>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-emerald-50 p-3 rounded-2xl border border-emerald-100">
+                    <div>
+                      <h4 className="font-bold text-emerald-800 text-sm">Pilih Dapukan (Tugas Sabilillah)</h4>
+                      <p className="text-xs text-emerald-600">Centang dapukan yang diampu oleh jamaah. ({selectedDapukan.length} dipilih)</p>
+                    </div>
+                    <input 
+                      type="text"
+                      placeholder="Cari dapukan..."
+                      value={dapukanFilter}
+                      onChange={(e) => setDapukanFilter(e.target.value)}
+                      className="px-3 py-1.5 rounded-xl border border-emerald-200 text-xs outline-none bg-white"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 p-3 bg-slate-50 rounded-2xl border border-slate-100 max-h-64 overflow-y-auto">
+                    {DAPUKAN_OPTIONS.filter(d => d.toLowerCase().includes(dapukanFilter.toLowerCase())).map(pos => {
+                      const isChecked = selectedDapukan.includes(pos);
+                      return (
+                        <label key={pos} className={cn(
+                          "flex items-center gap-2.5 p-2 rounded-xl border transition-all cursor-pointer text-xs font-medium",
+                          isChecked 
+                            ? "bg-emerald-50 border-emerald-500 text-emerald-900 font-bold shadow-sm" 
+                            : "bg-white border-slate-200 text-slate-700 hover:border-slate-300"
+                        )}>
+                          <input 
+                            type="checkbox" 
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedDapukan([...selectedDapukan, pos]);
+                              } else {
+                                setSelectedDapukan(selectedDapukan.filter(p => p !== pos));
+                              }
+                            }}
+                            className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span className="truncate">{pos}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Dapukan di Tempat Sebelumnya</label>
+                    <input name="previousDapukan" defaultValue={editingJamaah?.previousDapukan} placeholder="Dapukan/Tugas di sambungan atau kelompok lama" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Status Mubaligh</label>
+                      <select name="isMubaligh" defaultValue={editingJamaah?.isMubaligh || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="">Pilih Status Mubaligh...</option>
+                        <option value="Ya">Ya</option>
+                        <option value="Tidak">Tidak</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Punya Saham UB</label>
+                      <select name="hasUbShares" defaultValue={editingJamaah?.hasUbShares || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="">Pilih Saham UB...</option>
+                        <option value="Sudah">Sudah</option>
+                        <option value="Belum">Belum</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex justify-between">
+                    <button type="button" onClick={() => setFormTab('pendidikan')} className="px-4 py-2 rounded-xl border text-slate-600 font-semibold text-xs">
+                      &larr; Kembali
+                    </button>
+                    <button type="button" onClick={() => setFormTab('keilmuan')} className="px-6 py-2 rounded-xl bg-slate-900 text-white font-semibold text-xs">
+                      Lanjut: Keilmuan & Haji &rarr;
+                    </button>
+                  </div>
+                </div>
+
+                {/* TAB 5: KEILMUAN, HAJI & KESEHATAN */}
+                <div className={cn("space-y-4", formTab === 'keilmuan' ? 'block' : 'hidden')}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Sudah Jurus Keras</label>
+                      <select name="hasJurusKeras" defaultValue={editingJamaah?.hasJurusKeras || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="">Pilih Status...</option>
+                        <option value="Sudah">Sudah</option>
+                        <option value="Belum">Belum</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Sudah Jurus Halus</label>
+                      <select name="hasJurusHalus" defaultValue={editingJamaah?.hasJurusHalus || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        <option value="">Pilih Status...</option>
+                        <option value="Sudah">Sudah</option>
+                        <option value="Belum">Belum</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Sudah Haji</label>
                     <select 
-                      value={selectedKKId} 
-                      onChange={(e) => setSelectedKKId(e.target.value)}
-                      required={!isKK}
-                      className="w-full px-4 py-2 rounded-xl border outline-none"
+                      name="hasHajj" 
+                      value={hasHajjStatus} 
+                      onChange={(e) => setHasHajjStatus(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white"
                     >
-                      <option value="">Pilih KK...</option>
-                      {headsOfFamily.filter(kk => kk.id !== editingJamaah?.id).map(kk => (
-                        <option key={kk.id} value={kk.memberId}>{kk.memberId} - {kk.name}</option>
-                      ))}
+                      <option value="">Pilih Status Haji...</option>
+                      <option value="Sudah">Sudah</option>
+                      <option value="Belum">Belum</option>
                     </select>
                   </div>
-                )}
-                <div>
-                  <label className="block text-sm font-medium mb-1">Kategori</label>
-                  <select name="category" defaultValue={editingJamaah?.category || 'UMUM'} className="w-full px-4 py-2 rounded-xl border outline-none">
-                    <option value="UMUM">UMUM</option>
-                    <option value="ACR">ACR (Anak Caberawit)</option>
-                    <option value="APR">APR (Anak Pra Remaja)</option>
-                    <option value="GPN">GPN (Generus Pra Nikah)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-2">Jabatan (Sebagai Apa)</label>
-                  <div className="grid grid-cols-2 gap-2 p-4 bg-slate-50 rounded-2xl border border-slate-100">
-                    {['Rokyah', 'Kiai Kelompok', 'Kiai Desa', 'Waikel', 'Wides', 'Bos Des', 'Bos Kel'].map(pos => (
-                      <label key={pos} className="flex items-center gap-2 cursor-pointer group">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedPositions.includes(pos)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedPositions([...selectedPositions, pos]);
-                            } else {
-                              setSelectedPositions(selectedPositions.filter(p => p !== pos));
-                            }
-                          }}
-                          className="w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <span className="text-xs font-bold text-slate-600 group-hover:text-emerald-600 transition-colors">{pos}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Telepon</label>
-                  <input name="phone" defaultValue={editingJamaah?.phone} required className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Alamat</label>
-                  <textarea name="address" defaultValue={editingJamaah?.address} required className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none" />
-                </div>
-                {profile.role === 'admin' && (
+
+                  {hasHajjStatus === 'Belum' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-amber-50 rounded-2xl border border-amber-100">
+                      <div>
+                        <label className="block text-xs font-bold text-amber-900 mb-1">Nomor Porsi Haji (Bila Belum)</label>
+                        <input name="hajjPortionNumber" defaultValue={editingJamaah?.hajjPortionNumber} placeholder="No. Porsi pendaftaran" className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-amber-500 outline-none text-sm bg-white" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-amber-900 mb-1">Rencana Tahun Berangkat (Bila Belum)</label>
+                        <input name="plannedHajjYear" defaultValue={editingJamaah?.plannedHajjYear} placeholder="Contoh: 2028" className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-amber-500 outline-none text-sm bg-white" />
+                      </div>
+                    </div>
+                  )}
+
+                  {hasHajjStatus === 'Sudah' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 bg-emerald-50 rounded-2xl border border-emerald-100">
+                      <div>
+                        <label className="block text-xs font-bold text-emerald-900 mb-1">Nama Haji (Bila Sudah)</label>
+                        <input name="hajjName" defaultValue={editingJamaah?.hajjName} placeholder="Gelar / Nama Haji" className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-emerald-900 mb-1">Tahun Haji (Bila Sudah)</label>
+                        <input name="hajjYear" defaultValue={editingJamaah?.hajjYear} placeholder="Contoh: 2022" className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white" />
+                      </div>
+                    </div>
+                  )}
+
                   <div>
-                    <label className="block text-sm font-medium mb-1">Lokasi</label>
-                    <select name="location" defaultValue={editingJamaah?.location} className="w-full px-4 py-2 rounded-xl border outline-none">
-                      {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                        <option key={l} value={l}>{l}</option>
-                      ))}
-                    </select>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Riwayat Penyakit</label>
+                    <textarea name="medicalHistory" defaultValue={editingJamaah?.medicalHistory} rows={2} placeholder="Catatan riwayat kesehatan/penyakit..." className="w-full px-4 py-2 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
                   </div>
-                )}
-                <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={closeForm} className="flex-1 px-6 py-2.5 rounded-xl border hover:bg-slate-50 transition-all font-semibold">Batal</button>
-                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-all font-semibold shadow-lg shadow-emerald-200">Simpan</button>
+
+                  <div className="pt-2 flex justify-between">
+                    <button type="button" onClick={() => setFormTab('dapukan')} className="px-4 py-2 rounded-xl border text-slate-600 font-semibold text-xs">
+                      &larr; Kembali
+                    </button>
+                  </div>
+                </div>
+
+                {/* Form Action Buttons */}
+                <div className="flex gap-3 pt-6 border-t mt-4">
+                  <button type="button" onClick={closeForm} className="flex-1 px-6 py-2.5 rounded-xl border hover:bg-slate-50 transition-all font-semibold text-sm text-slate-700">Batal</button>
+                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 transition-all font-semibold text-sm shadow-lg shadow-emerald-200">
+                    {editingJamaah ? 'Simpan Perubahan' : 'Simpan Data Jamaah'}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -1305,13 +1982,28 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
 }
 
 function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'barang' }: { profile: UserProfile, formTrigger?: string | null, onFormTriggered?: () => void, assetType?: 'barang' | 'tanah' }) {
-  const { db } = useFirebase();
-  const baseFilter = useMemo(() => profile.role === 'pengurus' ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
-  const { data: allAssets, loading } = useFirestoreQuery<Asset>(db, 'assets', baseFilter);
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
+  const baseFilter = useMemo(() => (profile.role === 'pengurus' && profile.location && (profile.location as string) !== 'Seluruh Lokasi') ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
+  const { data: allAssets, loading } = useDataQuery<Asset>('assets', baseFilter);
   const assets = useMemo(() => allAssets.filter(a => {
     if (assetType === 'barang') return !a.assetType || a.assetType === 'barang';
     return a.assetType === 'tanah';
   }), [allAssets, assetType]);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(9);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [assetType]);
+
+  const totalPages = Math.ceil(assets.length / pageSize) || 1;
+  const paginatedAssets = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return assets.slice(start, start + pageSize);
+  }, [assets, currentPage, pageSize]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -1345,7 +2037,6 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!db) return;
     const formData = new FormData(e.currentTarget);
     const data = {
       name: formData.get('name') as string,
@@ -1360,12 +2051,13 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
       description: formData.get('description') as string
     };
 
-    if (editingAsset) {
-      await updateDoc(doc(db, 'assets', editingAsset.id), data as any);
-    } else {
-      await addDoc(collection(db, 'assets'), data);
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'assets', data, editingAsset?.id);
+      showToast(`Data ${isTanah ? 'tanah' : 'barang'} ${data.name} berhasil disimpan!`, 'success');
+      closeForm();
+    } catch (err: any) {
+      showToast(`Gagal menyimpan data: ${err.message}`, 'error');
     }
-    closeForm();
   };
 
   const closeForm = () => {
@@ -1398,80 +2090,115 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {assets.map((asset) => (
-          <motion.div 
-            key={asset.id}
-            layout
-            className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col"
-          >
-            {asset.photoUrl && (
-              <div className="h-40 overflow-hidden">
-                <img src={asset.photoUrl} className="w-full h-full object-cover" />
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="bg-white rounded-2xl border border-slate-100 p-6 shadow-sm animate-pulse space-y-4">
+              <div className="h-32 bg-slate-100 rounded-xl w-full flex items-center justify-center">
+                <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
               </div>
-            )}
-            <div className="p-6">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-3 bg-emerald-50 rounded-xl">
-                  {isTanah ? <MapIcon className="w-6 h-6 text-emerald-600" /> : <Package className="w-6 h-6 text-emerald-600" />}
-                </div>
-                <span className={cn(
-                  "px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider",
-                  asset.status === 'baik' || asset.status === 'wakaf' ? "bg-emerald-100 text-emerald-700" : 
-                  asset.status === 'rusak' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-                )}>
-                  {asset.status}
-                </span>
-              </div>
-              <h3 className="font-bold text-slate-900 text-lg mb-1">{asset.name}</h3>
-              <p className="text-slate-500 text-sm mb-4">{asset.category}</p>
-              
-              <div className="space-y-3">
-                {isTanah ? (
-                  <div className="flex items-center justify-between py-2 border-t border-slate-50">
-                    <span className="text-sm text-slate-500">Luas Tanah</span>
-                    <span className="font-bold text-slate-900">{asset.areaSize} m²</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between py-2 border-t border-slate-50">
-                    <span className="text-sm text-slate-500">Jumlah</span>
-                    <span className="font-bold text-slate-900">{asset.quantity} Unit</span>
+              <p className="text-center text-xs font-semibold text-slate-500">Memuat data {isTanah ? 'tanah' : 'barang'}...</p>
+            </div>
+          ))}
+        </div>
+      ) : assets.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-100 p-12 text-center text-slate-400 font-medium">
+          Tidak ada data {isTanah ? 'tanah' : 'barang'} ditemukan
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {paginatedAssets.map((asset) => (
+              <motion.div 
+                key={asset.id}
+                layout
+                className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden flex flex-col"
+              >
+                {asset.photoUrl && (
+                  <div className="h-40 overflow-hidden">
+                    <img src={asset.photoUrl} className="w-full h-full object-cover" />
                   </div>
                 )}
-                <div className="flex items-center justify-between py-2 border-t border-slate-50">
-                  <span className="text-sm text-slate-500">Lokasi</span>
-                  <span className="text-sm font-medium text-slate-700">{asset.location}</span>
-                </div>
-              </div>
+                <div className="p-6">
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="p-3 bg-emerald-50 rounded-xl">
+                      {isTanah ? <MapIcon className="w-6 h-6 text-emerald-600" /> : <Package className="w-6 h-6 text-emerald-600" />}
+                    </div>
+                    <span className={cn(
+                      "px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider",
+                      asset.status === 'baik' || asset.status === 'wakaf' ? "bg-emerald-100 text-emerald-700" : 
+                      asset.status === 'rusak' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                    )}>
+                      {asset.status}
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-slate-900 text-lg mb-1">{asset.name}</h3>
+                  <p className="text-slate-500 text-sm mb-4">{asset.category}</p>
+                  
+                  <div className="space-y-3">
+                    {isTanah ? (
+                      <div className="flex items-center justify-between py-2 border-t border-slate-50">
+                        <span className="text-sm text-slate-500">Luas Tanah</span>
+                        <span className="font-bold text-slate-900">{asset.areaSize} m²</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between py-2 border-t border-slate-50">
+                        <span className="text-sm text-slate-500">Jumlah</span>
+                        <span className="font-bold text-slate-900">{asset.quantity} Unit</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between py-2 border-t border-slate-50">
+                      <span className="text-sm text-slate-500">Lokasi</span>
+                      <span className="text-sm font-medium text-slate-700">{asset.location}</span>
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-3 mt-6">
-                <button 
-                  onClick={() => openEdit(asset)}
-                  className="py-2 rounded-xl text-xs font-semibold text-blue-600 border border-blue-100 hover:bg-blue-50 transition-all"
-                >
-                  Edit
-                </button>
-                <button 
-                  onClick={() => setDeleteId(asset.id)}
-                  className="py-2 rounded-xl text-xs font-semibold text-red-500 border border-red-50 hover:bg-red-50 transition-all"
-                >
-                  Hapus
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        ))}
-      </div>
+                  <div className="grid grid-cols-2 gap-3 mt-6">
+                    <button 
+                      onClick={() => openEdit(asset)}
+                      className="py-2 rounded-xl text-xs font-semibold text-blue-600 border border-blue-100 hover:bg-blue-50 transition-all"
+                    >
+                      Edit
+                    </button>
+                    <button 
+                      onClick={() => setDeleteId(asset.id)}
+                      className="py-2 rounded-xl text-xs font-semibold text-red-500 border border-red-50 hover:bg-red-50 transition-all"
+                    >
+                      Hapus
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={assets.length}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setPageSize}
+              pageSizeOptions={[6, 9, 15, 30]}
+              className="px-6 py-4"
+            />
+          </div>
+        </div>
+      )}
 
       <DeleteConfirmation 
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => {
-          if (!deleteId || !db) return;
+          if (!deleteId) return;
           setIsDeleting(true);
           try {
-            await deleteDoc(doc(db, 'assets', deleteId));
+            await deleteData(null, accessToken, spreadsheetId, 'assets', deleteId);
+            showToast(`Data ${isTanah ? 'tanah' : 'barang'} berhasil dihapus!`, 'success');
             setDeleteId(null);
+          } catch (err: any) {
+            showToast(`Gagal menghapus: ${err.message}`, 'error');
           } finally {
             setIsDeleting(false);
           }
@@ -1577,9 +2304,19 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
 }
 
 function ActivitiesView({ profile }: { profile: UserProfile }) {
-  const { db } = useFirebase();
-  const filter = useMemo(() => profile.role === 'pengurus' ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
-  const { data: activities } = useFirestoreQuery<Activity>(db, 'activities', filter);
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
+  const filter = useMemo(() => (profile.role === 'pengurus' && profile.location && (profile.location as string) !== 'Seluruh Lokasi') ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
+  const { data: activities, loading } = useDataQuery<Activity>('activities', filter);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(6);
+
+  const totalPages = Math.ceil(activities.length / pageSize) || 1;
+  const paginatedActivities = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return activities.slice(start, start + pageSize);
+  }, [activities, currentPage, pageSize]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -1600,7 +2337,6 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!db) return;
     const formData = new FormData(e.currentTarget);
     const data = {
       title: formData.get('title') as string,
@@ -1612,12 +2348,13 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
       createdBy: profile.uid
     };
 
-    if (editingActivity) {
-      await updateDoc(doc(db, 'activities', editingActivity.id), data as any);
-    } else {
-      await addDoc(collection(db, 'activities'), data);
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'activities', data, editingActivity?.id);
+      showToast('Data kegiatan berhasil disimpan!', 'success');
+      closeForm();
+    } catch (err: any) {
+      showToast(`Gagal menyimpan data: ${err.message}`, 'error');
     }
-    closeForm();
   };
 
   const closeForm = () => {
@@ -1628,7 +2365,7 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
 
   const openEdit = (a: Activity) => {
     setEditingActivity(a);
-    setBase64Images(a.imageUrls || []);
+    setBase64Images(parseImageUrls(a.imageUrls));
     setShowForm(true);
   };
 
@@ -1648,55 +2385,90 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-        {activities.map((activity) => (
-          <div key={activity.id} className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm flex flex-col">
-            <div className="h-56 relative group">
-              <div className="w-full h-full flex overflow-x-auto snap-x snap-mandatory scrollbar-hide">
-                {activity.imageUrls && activity.imageUrls.length > 0 ? (
-                  activity.imageUrls.map((url, idx) => (
-                    <img key={idx} src={url} className="w-full h-full object-cover flex-shrink-0 snap-center" />
-                  ))
-                ) : (
-                  <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
-                    <Calendar className="w-12 h-12" />
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="bg-white rounded-3xl p-6 border border-slate-100 shadow-sm animate-pulse space-y-4">
+              <div className="h-48 bg-slate-100 rounded-2xl w-full flex items-center justify-center">
+                <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+              </div>
+              <p className="text-center text-xs font-semibold text-slate-500">Memuat data kegiatan...</p>
+            </div>
+          ))}
+        </div>
+      ) : activities.length === 0 ? (
+        <div className="bg-white rounded-3xl border border-slate-100 p-12 text-center text-slate-400 font-medium">
+          Belum ada kegiatan terdaftar
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {paginatedActivities.map((activity) => {
+              const actImages = parseImageUrls(activity.imageUrls);
+              return (
+                <div key={activity.id} className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm flex flex-col">
+                  <div className="h-56 relative group">
+                    <div className="w-full h-full flex overflow-x-auto snap-x snap-mandatory scrollbar-hide">
+                      {actImages.length > 0 ? (
+                        actImages.map((url, idx) => (
+                          <img key={idx} src={url} className="w-full h-full object-cover flex-shrink-0 snap-center" />
+                        ))
+                      ) : (
+                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400">
+                          <Calendar className="w-12 h-12" />
+                        </div>
+                      )}
+                    </div>
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
+                     <button 
+                      onClick={() => openEdit(activity)}
+                      className="bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-emerald-500 transition-colors"
+                    >
+                      <Plus className="w-6 h-6" />
+                    </button>
+                     <button 
+                      onClick={() => setDeleteId(activity.id)}
+                      className="bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-red-500 transition-colors"
+                    >
+                      <Plus className="w-6 h-6 rotate-45" />
+                    </button>
                   </div>
-                )}
+                  <div className="absolute top-4 left-4">
+                    <span className={cn(
+                      "px-3 py-1 rounded-full text-xs font-bold text-white uppercase",
+                      activity.type === 'harian' ? "bg-emerald-500" : "bg-blue-500"
+                    )}>
+                      {activity.type}
+                    </span>
+                  </div>
+                </div>
+                <div className="p-6">
+                  <h3 className="text-lg font-bold text-slate-900 mb-2">{activity.title}</h3>
+                  <p className="text-slate-500 text-sm mb-4 flex-grow">{activity.description}</p>
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <Clock className="w-4 h-4" />
+                    {new Date(activity.date).toLocaleString()}
+                  </div>
+                </div>
               </div>
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                 <button 
-                  onClick={() => openEdit(activity)}
-                  className="bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-emerald-500 transition-colors"
-                >
-                  <Plus className="w-6 h-6" />
-                </button>
-                 <button 
-                  onClick={() => setDeleteId(activity.id)}
-                  className="bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-red-500 transition-colors"
-                >
-                  <Plus className="w-6 h-6 rotate-45" />
-                </button>
-              </div>
-              <div className="absolute top-4 left-4">
-                <span className={cn(
-                  "px-3 py-1 rounded-full text-xs font-bold text-white uppercase",
-                  activity.type === 'harian' ? "bg-emerald-500" : "bg-blue-500"
-                )}>
-                  {activity.type}
-                </span>
-              </div>
-            </div>
-            <div className="p-6">
-              <h3 className="text-lg font-bold text-slate-900 mb-2">{activity.title}</h3>
-              <p className="text-slate-500 text-sm mb-4 flex-grow">{activity.description}</p>
-              <div className="flex items-center gap-2 text-xs text-slate-400">
-                <Clock className="w-4 h-4" />
-                {new Date(activity.date).toLocaleString()}
-              </div>
-            </div>
+              );
+            })}
           </div>
-        ))}
-      </div>
+
+          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={activities.length}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setPageSize}
+              pageSizeOptions={[6, 12, 24]}
+              className="px-6 py-4"
+            />
+          </div>
+        </div>
+      )}
 
       <AnimatePresence>
         {showForm && (
@@ -1768,11 +2540,14 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => {
-          if (!deleteId || !db) return;
+          if (!deleteId) return;
           setIsDeleting(true);
           try {
-            await deleteDoc(doc(db, 'activities', deleteId));
+            await deleteData(null, accessToken, spreadsheetId, 'activities', deleteId);
+            showToast('Kegiatan berhasil dihapus!', 'success');
             setDeleteId(null);
+          } catch (err: any) {
+            showToast(`Gagal menghapus: ${err.message}`, 'error');
           } finally {
             setIsDeleting(false);
           }
@@ -1786,25 +2561,38 @@ function ActivitiesView({ profile }: { profile: UserProfile }) {
 }
 
 function FacilityView({ profile }: { profile: UserProfile }) {
-  const { db } = useFirebase();
-  const { data: stats } = useFirestoreQuery<FacilityStat>(db, 'facility_stats');
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
+  const { data: stats, loading } = useDataQuery<FacilityStat>('facility_stats', []);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(4);
+
+  const totalPages = Math.ceil(stats.length / pageSize) || 1;
+  const paginatedStats = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return stats.slice(start, start + pageSize);
+  }, [stats, currentPage, pageSize]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingStat, setEditingStat] = useState<FacilityStat | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const updateUsage = async (id: string, current: number, capacity: number, delta: number) => {
-    if (!db) return;
     const newVal = Math.max(0, Math.min(capacity, current + delta));
-    await updateDoc(doc(db, 'facility_stats', id), {
-      currentUsage: newVal,
-      updatedAt: Date.now()
-    });
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'facility_stats', { 
+        currentUsage: newVal,
+        updatedAt: Date.now()
+      }, id);
+      showToast('Penggunaan fasilitas diperbarui!', 'success');
+    } catch (err: any) {
+      showToast(`Gagal mengupdate status: ${err.message}`, 'error');
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!db) return;
     const formData = new FormData(e.currentTarget);
     const data = {
       name: formData.get('name') as string,
@@ -1813,12 +2601,13 @@ function FacilityView({ profile }: { profile: UserProfile }) {
       updatedAt: Date.now()
     };
 
-    if (editingStat) {
-      await updateDoc(doc(db, 'facility_stats', editingStat.id), data);
-    } else {
-      await addDoc(collection(db, 'facility_stats'), data);
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'facility_stats', data, editingStat?.id);
+      showToast('Data fasilitas berhasil disimpan!', 'success');
+      closeForm();
+    } catch (err: any) {
+      showToast(`Gagal menyimpan data: ${err.message}`, 'error');
     }
-    closeForm();
   };
 
   const closeForm = () => {
@@ -1849,65 +2638,98 @@ function FacilityView({ profile }: { profile: UserProfile }) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {stats.map((stat) => (
-          <div key={stat.id} className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
-            <div className="flex items-center justify-between mb-8">
-              <h3 className="text-xl font-bold text-slate-900">{stat.name}</h3>
-              <div className="flex items-center gap-3">
-                {profile.role === 'admin' && (
-                  <div className="flex gap-2 mr-2">
-                    <button onClick={() => openEdit(stat)} className="text-slate-400 hover:text-emerald-500"><Plus className="w-4 h-4" /></button>
-                    <button onClick={() => setDeleteId(stat.id)} className="text-slate-400 hover:text-red-500"><Plus className="w-4 h-4 rotate-45" /></button>
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {[1, 2].map((i) => (
+            <div key={i} className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm animate-pulse space-y-4">
+              <div className="h-8 bg-slate-100 rounded-md w-1/2 mx-auto" />
+              <div className="h-20 bg-slate-100 rounded-2xl w-full flex items-center justify-center">
+                <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+              </div>
+              <p className="text-center text-xs font-semibold text-slate-500">Memuat data fasilitas...</p>
+            </div>
+          ))}
+        </div>
+      ) : stats.length === 0 ? (
+        <div className="bg-white rounded-3xl border border-slate-100 p-12 text-center text-slate-400 font-medium">
+          Tidak ada data fasilitas
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {paginatedStats.map((stat) => (
+              <div key={stat.id} className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+                <div className="flex items-center justify-between mb-8">
+                  <h3 className="text-xl font-bold text-slate-900">{stat.name}</h3>
+                  <div className="flex items-center gap-3">
+                    {profile.role === 'admin' && (
+                      <div className="flex gap-2 mr-2">
+                        <button onClick={() => openEdit(stat)} className="text-slate-400 hover:text-emerald-500"><Plus className="w-4 h-4" /></button>
+                        <button onClick={() => setDeleteId(stat.id)} className="text-slate-400 hover:text-red-500"><Plus className="w-4 h-4 rotate-45" /></button>
+                      </div>
+                    )}
+                    <span className={cn(
+                      "px-3 py-1 rounded-full text-sm font-bold",
+                      (stat.currentUsage / stat.capacity) > 0.8 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
+                    )}>
+                      {Math.round((stat.currentUsage / stat.capacity) * 100)}% Terisi
+                    </span>
                   </div>
-                )}
-                <span className={cn(
-                  "px-3 py-1 rounded-full text-sm font-bold",
-                  (stat.currentUsage / stat.capacity) > 0.8 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"
-                )}>
-                  {Math.round((stat.currentUsage / stat.capacity) * 100)}% Terisi
-                </span>
-              </div>
-            </div>
+                </div>
 
-            <div className="relative h-4 bg-slate-100 rounded-full overflow-hidden mb-8">
-              <motion.div 
-                initial={{ width: 0 }}
-                animate={{ width: `${(stat.currentUsage / stat.capacity) * 100}%` }}
-                className={cn(
-                  "h-full transition-colors duration-500",
-                  (stat.currentUsage / stat.capacity) > 0.8 ? "bg-red-500" : "bg-emerald-500"
-                )}
-              />
-            </div>
+                <div className="relative h-4 bg-slate-100 rounded-full overflow-hidden mb-8">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${(stat.currentUsage / stat.capacity) * 100}%` }}
+                    className={cn(
+                      "h-full transition-colors duration-500",
+                      (stat.currentUsage / stat.capacity) > 0.8 ? "bg-red-500" : "bg-emerald-500"
+                    )}
+                  />
+                </div>
 
-            <div className="flex items-center justify-between">
-              <div className="text-center">
-                <p className="text-3xl font-black text-slate-900">{stat.currentUsage}</p>
-                <p className="text-xs text-slate-400 uppercase font-bold tracking-widest mt-1">Sekarang</p>
+                <div className="flex items-center justify-between">
+                  <div className="text-center">
+                    <p className="text-3xl font-black text-slate-900">{stat.currentUsage}</p>
+                    <p className="text-xs text-slate-400 uppercase font-bold tracking-widest mt-1">Sekarang</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <button 
+                      onClick={() => updateUsage(stat.id, stat.currentUsage, stat.capacity, -1)}
+                      className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl font-bold text-slate-600 hover:bg-slate-200 transition-all"
+                    >
+                      -
+                    </button>
+                    <button 
+                      onClick={() => updateUsage(stat.id, stat.currentUsage, stat.capacity, 1)}
+                      className="w-12 h-12 rounded-2xl bg-emerald-600 flex items-center justify-center text-2xl font-bold text-white hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-3xl font-black text-slate-200">{stat.capacity}</p>
+                    <p className="text-xs text-slate-400 uppercase font-bold tracking-widest mt-1">Kapasitas</p>
+                  </div>
+                </div>
               </div>
-              <div className="flex gap-4">
-                <button 
-                  onClick={() => updateUsage(stat.id, stat.currentUsage, stat.capacity, -1)}
-                  className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-2xl font-bold text-slate-600 hover:bg-slate-200 transition-all"
-                >
-                  -
-                </button>
-                <button 
-                  onClick={() => updateUsage(stat.id, stat.currentUsage, stat.capacity, 1)}
-                  className="w-12 h-12 rounded-2xl bg-emerald-600 flex items-center justify-center text-2xl font-bold text-white hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100"
-                >
-                  +
-                </button>
-              </div>
-              <div className="text-center">
-                <p className="text-3xl font-black text-slate-200">{stat.capacity}</p>
-                <p className="text-xs text-slate-400 uppercase font-bold tracking-widest mt-1">Kapasitas</p>
-              </div>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
+
+          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={stats.length}
+              pageSize={pageSize}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={setPageSize}
+              pageSizeOptions={[4, 6, 12]}
+              className="px-6 py-4"
+            />
+          </div>
+        </div>
+      )}
 
       <AnimatePresence>
         {showForm && (
@@ -1937,11 +2759,14 @@ function FacilityView({ profile }: { profile: UserProfile }) {
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => {
-          if (!deleteId || !db) return;
+          if (!deleteId) return;
           setIsDeleting(true);
           try {
-            await deleteDoc(doc(db, 'facility_stats', deleteId));
+            await deleteData(null, accessToken, spreadsheetId, 'facility_stats', deleteId);
+            showToast('Fasilitas berhasil dihapus!', 'success');
             setDeleteId(null);
+          } catch (err: any) {
+            showToast(`Gagal menghapus: ${err.message}`, 'error');
           } finally {
             setIsDeleting(false);
           }
@@ -1955,7 +2780,8 @@ function FacilityView({ profile }: { profile: UserProfile }) {
 }
 
 function AttendanceReportView({ profile }: { profile: UserProfile }) {
-  const { db } = useFirebase();
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
   const [selectedDay, setSelectedDay] = useState<number | 'all'>('all');
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
@@ -1972,7 +2798,7 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
     return constraints;
   }, [profile.role, profile.location]);
 
-  const { data: attendanceData, loading } = useFirestoreQuery<Attendance>(db, 'attendance', filter);
+  const { data: attendanceData, loading } = useDataQuery<Attendance>('attendance', filter);
 
   const months = [
     'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
@@ -2039,21 +2865,38 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
   };
 
   const handleConfirm = async (id: string, current: boolean) => {
-    if (!db) return;
-    await updateDoc(doc(db, 'attendance', id), {
-      isConfirmed: !current
-    });
+    try {
+      await saveData(null, accessToken, spreadsheetId, 'attendance', {
+        isConfirmed: !current
+      }, id);
+      showToast(!current ? 'Kehadiran dikonfirmasi!' : 'Konfirmasi dibatalkan', 'success');
+    } catch (err: any) {
+      showToast(`Gagal mengonfirmasi: ${err.message}`, 'error');
+    }
   };
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedDay, selectedMonth, selectedYear]);
+
+  const totalPages = Math.ceil(filteredData.length / pageSize) || 1;
+  const paginatedData = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredData.slice(start, start + pageSize);
+  }, [filteredData, currentPage, pageSize]);
 
   const groupedData = useMemo(() => {
     const groups: Record<string, Attendance[]> = {};
-    filteredData.forEach(a => {
+    paginatedData.forEach(a => {
       const dateKey = new Date(a.date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
       if (!groups[dateKey]) groups[dateKey] = [];
       groups[dateKey].push(a);
     });
     return groups;
-  }, [filteredData]);
+  }, [paginatedData]);
 
   return (
     <div className="space-y-8">
@@ -2173,7 +3016,10 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
               {loading ? (
                 <tr>
                   <td colSpan={10} className="px-6 py-12 text-center">
-                    <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full mx-auto" />
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+                      <p className="text-xs font-semibold text-slate-500">Memuat laporan absensi...</p>
+                    </div>
                   </td>
                 </tr>
               ) : Object.keys(groupedData).length > 0 ? (
@@ -2262,6 +3108,16 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
             </tbody>
           </table>
         </div>
+        <Pagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filteredData.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+          onPageSizeChange={setPageSize}
+          pageSizeOptions={[10, 20, 50, 100]}
+          className="px-6 py-4 bg-white border-t border-slate-100"
+        />
       </div>
 
       <AnimatePresence>
@@ -2272,16 +3128,21 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
               <form 
                 onSubmit={async (e) => {
                   e.preventDefault();
-                  if (!db || !editingAttendance) return;
+                  if (!editingAttendance) return;
                   setIsUpdating(true);
                   const formData = new FormData(e.currentTarget);
                   try {
-                    await updateDoc(doc(db, 'attendance', editingAttendance.id), {
+                    await saveData(null, accessToken, spreadsheetId, 'attendance', {
+                      ...editingAttendance,
                       sessionType: formData.get('sessionType'),
                       status: formData.get('status'),
-                      reason: formData.get('reason')
-                    });
+                      reason: formData.get('reason'),
+                      updatedAt: Date.now()
+                    }, editingAttendance.id);
+                    showToast('Data absensi berhasil diperbarui!', 'success');
                     setEditingAttendance(null);
+                  } catch (err: any) {
+                    showToast(`Gagal mengupdate: ${err.message}`, 'error');
                   } finally {
                     setIsUpdating(false);
                   }
@@ -2327,11 +3188,14 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => {
-          if (!deleteId || !db) return;
+          if (!deleteId) return;
           setIsDeleting(true);
           try {
-            await deleteDoc(doc(db, 'attendance', deleteId));
+            await deleteData(null, accessToken, spreadsheetId, 'attendance', deleteId);
+            showToast('Data absensi berhasil dihapus!', 'success');
             setDeleteId(null);
+          } catch (err: any) {
+            showToast(`Gagal menghapus: ${err.message}`, 'error');
           } finally {
             setIsDeleting(false);
           }
@@ -2345,7 +3209,8 @@ function AttendanceReportView({ profile }: { profile: UserProfile }) {
 }
 
 function UBShoppingView({ profile }: { profile: UserProfile }) {
-  const { db } = useFirebase();
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedLocation, setSelectedLocation] = useState<MosqueLocation | 'all'>(profile.role === 'pengurus' ? profile.location! : 'all');
@@ -2361,7 +3226,7 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
     return filters;
   }, [selectedMonth, selectedYear, selectedLocation]);
 
-  const { data: shoppingRecords, loading: loadingShopping } = useFirestoreQuery<UBShopping>(db, 'ub_shopping', shoppingFilter);
+  const { data: shoppingRecords, loading: loadingShopping } = useDataQuery<UBShopping>('ub_shopping', shoppingFilter);
   
   const jamaahFilter = useMemo(() => {
     if (selectedLocation !== 'all') {
@@ -2370,7 +3235,7 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
     return [];
   }, [selectedLocation]);
   
-  const { data: allJamaah, loading: loadingJamaah } = useFirestoreQuery<Jamaah>(db, 'jamaah', jamaahFilter);
+  const { data: allJamaah, loading: loadingJamaah } = useDataQuery<Jamaah>('jamaah', jamaahFilter);
   
   const [showForm, setShowForm] = useState(false);
   const [editingShopping, setEditingShopping] = useState<UBShopping | null>(null);
@@ -2434,9 +3299,22 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
     };
   }, [allJamaah, shoppingByKK, shoppingRecords]);
 
+  const kkList = useMemo(() => allJamaah.filter(j => j.isKK), [allJamaah]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedMonth, selectedYear, selectedLocation]);
+
+  const totalPages = Math.ceil(kkList.length / pageSize) || 1;
+  const paginatedKKList = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return kkList.slice(start, start + pageSize);
+  }, [kkList, currentPage, pageSize]);
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!db) return;
     setIsUpdating(true);
     
     const formData = new FormData(e.currentTarget);
@@ -2462,15 +3340,12 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
     };
 
     try {
-      if (editingShopping) {
-        await updateDoc(doc(db, 'ub_shopping', editingShopping.id), data as any);
-      } else {
-        await addDoc(collection(db, 'ub_shopping'), data);
-      }
+      await saveData(null, accessToken, spreadsheetId, 'ub_shopping', data, editingShopping?.id);
+      showToast('Data belanja UB berhasil disimpan!', 'success');
       setShowForm(false);
       setEditingShopping(null);
-    } catch (error) {
-      console.error(error);
+    } catch (error: any) {
+      showToast(`Gagal menyimpan data: ${error.message}`, 'error');
     } finally {
       setIsUpdating(false);
     }
@@ -2614,10 +3489,19 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
               {loadingJamaah || loadingShopping ? (
                 <tr>
                   <td colSpan={6} className="px-6 py-12 text-center">
-                    <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full mx-auto" />
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+                      <p className="text-xs font-semibold text-slate-500">Memuat data belanja UB...</p>
+                    </div>
                   </td>
                 </tr>
-              ) : allJamaah.filter(j => j.isKK).map((j) => {
+              ) : kkList.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400 font-medium">
+                    Tidak ada data kepala keluarga untuk lokasi ini
+                  </td>
+                </tr>
+              ) : paginatedKKList.map((j) => {
                 const total = shoppingByKK[j.id] || 0;
                 const isMet = total >= 100000;
                 const remaining = Math.max(0, 100000 - total);
@@ -2687,6 +3571,16 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
             </tbody>
           </table>
         </div>
+        <Pagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={kkList.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+          onPageSizeChange={setPageSize}
+          pageSizeOptions={[10, 20, 50]}
+          className="px-6 py-4 bg-white border-t border-slate-100"
+        />
       </div>
 
       <AnimatePresence>
@@ -2792,12 +3686,15 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
                     <button 
                       type="button"
                       onClick={async () => {
-                        if (!db || !editingShopping) return;
+                        if (!editingShopping) return;
                         setIsDeleting(true);
                         try {
-                          await deleteDoc(doc(db, 'ub_shopping', editingShopping.id));
+                          await deleteData(null, accessToken, spreadsheetId, 'ub_shopping', editingShopping.id);
+                          showToast('Data belanja UB berhasil dihapus!', 'success');
                           setShowForm(false);
                           setEditingShopping(null);
+                        } catch (err: any) {
+                          showToast(`Gagal menghapus: ${err.message}`, 'error');
                         } finally {
                           setIsDeleting(false);
                         }
@@ -2824,121 +3721,654 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
   );
 }
 
-function UsersView() {
-  const { db } = useFirebase();
-  const { data: users, loading } = useFirestoreQuery<UserProfile>(db, 'users');
+function UsersView({ profile }: { profile?: any }) {
+  const { accessToken, spreadsheetId } = useFirebase();
+  const { showToast } = useToast();
+  
+  const effectiveSpreadsheetId = profile?.spreadsheetId || spreadsheetId || (import.meta as any).env?.VITE_SPREADSHEET_ID || localStorage.getItem('app_spreadsheet_id') || '';
+  const activeToken = accessToken || localStorage.getItem('app_access_token') || null;
+
+  const { data: users, loading } = useDataQuery<UserProfile>('users', [], effectiveSpreadsheetId);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'admin' | 'pengurus'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'verified' | 'pending'>('all');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSyncingSelf, setIsSyncingSelf] = useState(false);
+
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const toggleVerify = async (uid: string, current: boolean) => {
-    if (!db) return;
-    await updateDoc(doc(db, 'users', uid), {
-      isVerified: !current
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      clearSheetMemoryCache('users');
+      window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName: 'users' } }));
+      showToast('Memuat ulang data pengguna langsung dari Google Sheets...', 'info');
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 600);
+    }
+  };
+
+  const isCurrentProfileInUsers = useMemo(() => {
+    if (!profile?.uid && !profile?.email) return true;
+    return users.some(u => 
+      (profile.uid && (u.uid === profile.uid || u.id === profile.uid)) ||
+      (profile.email && u.email && u.email.toLowerCase() === profile.email.toLowerCase())
+    );
+  }, [users, profile]);
+
+  const handleSyncMyProfile = async () => {
+    if (!profile) return;
+    setIsSyncingSelf(true);
+    try {
+      const myId = profile.uid || 'usr_' + Math.random().toString(36).substring(2, 9);
+      const userObj = {
+        uid: myId,
+        id: myId,
+        displayName: profile.displayName || 'Admin',
+        email: profile.email || '',
+        role: profile.role || 'admin',
+        location: profile.location || null,
+        isVerified: true,
+        createdAt: profile.createdAt || Date.now(),
+        spreadsheetId: effectiveSpreadsheetId
+      };
+      await saveData(null, activeToken, effectiveSpreadsheetId, 'users', userObj, myId);
+      clearSheetMemoryCache('users');
+      window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName: 'users' } }));
+      showToast('Akun Anda berhasil disimpan ke sheet "users" di Google Spreadsheet!', 'success');
+    } catch (err: any) {
+      showToast(`Gagal menyelaraskan akun: ${err.message}`, 'error');
+    } finally {
+      setIsSyncingSelf(false);
+    }
+  };
+
+  const filteredUsers = useMemo(() => {
+    return users.filter(u => {
+      const isVerified = u.isVerified === true || (u.isVerified as any) === 'true' || (u.isVerified as any) === 'TRUE';
+      if (statusFilter === 'verified' && !isVerified) return false;
+      if (statusFilter === 'pending' && isVerified) return false;
+      if (roleFilter !== 'all' && u.role !== roleFilter) return false;
+      if (searchTerm.trim()) {
+        const q = searchTerm.toLowerCase();
+        const nameMatch = (u.displayName || '').toLowerCase().includes(q);
+        const emailMatch = (u.email || '').toLowerCase().includes(q);
+        const locMatch = (u.location || '').toLowerCase().includes(q);
+        const roleMatch = (u.role || '').toLowerCase().includes(q);
+        return nameMatch || emailMatch || locMatch || roleMatch;
+      }
+      return true;
     });
+  }, [users, statusFilter, roleFilter, searchTerm]);
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, roleFilter, searchTerm]);
+
+  const totalPages = Math.ceil(filteredUsers.length / pageSize) || 1;
+  const paginatedUsers = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredUsers.slice(start, start + pageSize);
+  }, [filteredUsers, currentPage, pageSize]);
+
+  const stats = useMemo(() => {
+    const total = users.length;
+    const verified = users.filter(u => u.isVerified === true || (u.isVerified as any) === 'true' || (u.isVerified as any) === 'TRUE').length;
+    const pending = total - verified;
+    const admins = users.filter(u => u.role === 'admin').length;
+    const pengurus = users.filter(u => u.role === 'pengurus').length;
+    return { total, verified, pending, admins, pengurus };
+  }, [users]);
+
+  const toggleVerify = async (userId: string, current: boolean) => {
+    const targetUser = users.find(u => (u.uid || u.id) === userId);
+    if (!targetUser) return;
+
+    try {
+      const targetId = userId || targetUser.uid || targetUser.id;
+      const newStatus = !current;
+      const updated = { 
+        ...targetUser, 
+        isVerified: newStatus, 
+        uid: targetId, 
+        id: targetId,
+        displayName: targetUser.displayName || '',
+        email: targetUser.email || '',
+        role: targetUser.role || 'pengurus',
+        location: targetUser.location || '',
+        spreadsheetId: effectiveSpreadsheetId
+      };
+
+      await saveData(null, activeToken, effectiveSpreadsheetId, 'users', updated, targetId);
+
+      // Sinkronkan ke local cache profil jika akun ini yang sedang login
+      const cacheKey = `user_profile_${targetId}`;
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          parsed.isVerified = newStatus;
+          localStorage.setItem(cacheKey, JSON.stringify(parsed));
+        } catch (e) {}
+      }
+
+      showToast(!current ? 'Status verifikasi pengguna berhasil diaktifkan!' : 'Verifikasi pengguna dinonaktifkan', 'success');
+    } catch (err: any) {
+      showToast(`Gagal mengubah status di spreadsheet: ${err.message}`, 'error');
+    }
   };
 
   const handleUpdate = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!db || !editingUser) return;
+    if (!editingUser) return;
+
+    setIsSaving(true);
     const formData = new FormData(e.currentTarget);
-    await updateDoc(doc(db, 'users', editingUser.uid), {
-      displayName: formData.get('displayName'),
-      role: formData.get('role'),
-      location: formData.get('role') === 'pengurus' ? formData.get('location') : null
-    });
-    setEditingUser(null);
+    const userId = editingUser.uid || editingUser.id;
+    const updated = {
+      ...editingUser,
+      uid: userId,
+      id: userId,
+      displayName: String(formData.get('displayName') || editingUser.displayName),
+      role: String(formData.get('role') || editingUser.role) as UserRole,
+      location: formData.get('role') === 'pengurus' ? String(formData.get('location') || '') as MosqueLocation : null,
+      spreadsheetId: effectiveSpreadsheetId
+    };
+    try {
+      await saveData(null, activeToken, effectiveSpreadsheetId, 'users', updated, userId);
+      showToast('Profil pengguna berhasil diperbarui di Google Sheets!', 'success');
+      setEditingUser(null);
+    } catch (err: any) {
+      showToast(`Gagal mengupdate profil: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleAddUser = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    setIsSaving(true);
+    const formData = new FormData(e.currentTarget);
+    const newUid = 'usr_' + Math.random().toString(36).substring(2, 11);
+    const role = String(formData.get('role') || 'pengurus') as UserRole;
+    const newUser = {
+      uid: newUid,
+      id: newUid,
+      displayName: String(formData.get('displayName')),
+      email: String(formData.get('email')),
+      role,
+      location: role === 'pengurus' ? String(formData.get('location') || '') as MosqueLocation : null,
+      isVerified: formData.get('isVerified') === 'true',
+      createdAt: Date.now(),
+      spreadsheetId: effectiveSpreadsheetId
+    };
+
+    try {
+      await saveData(null, activeToken, effectiveSpreadsheetId, 'users', newUser, newUid);
+      showToast('Pengguna baru berhasil ditambahkan ke Google Sheets!', 'success');
+      setShowAddForm(false);
+    } catch (err: any) {
+      showToast(`Gagal menambahkan pengguna ke spreadsheet: ${err.message}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Manajemen Pengguna</h2>
-          <p className="text-slate-500">Kelola hak akses admin dan pengurus</p>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-slate-900">Manajemen Pengguna</h2>
+            <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-full flex items-center gap-1.5 shadow-sm">
+              <Database className="w-3.5 h-3.5" />
+              Google Sheets (Sheet: users)
+            </span>
+          </div>
+          <p className="text-slate-500 text-sm mt-1">Kelola data pengguna, peranan (Admin/Pengurus), dan hak akses yang tersimpan di Google Spreadsheet</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="p-2.5 rounded-xl border border-slate-200 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 transition-all shadow-sm flex items-center gap-2 text-sm font-semibold disabled:opacity-50"
+            title="Muat ulang dari Google Sheets"
+          >
+            <RefreshCw className={cn("w-4 h-4", isRefreshing && "animate-spin text-emerald-600")} />
+            <span className="hidden sm:inline">Segarkan Data</span>
+          </button>
+          <button 
+            onClick={() => setShowAddForm(true)}
+            className="bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-semibold flex items-center gap-2 hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 text-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Tambah Pengguna
+          </button>
         </div>
       </div>
 
+      {/* Spreadsheet Status & Info Banner */}
+      <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-slate-50 border border-emerald-200/80 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold text-sm shadow-md shadow-emerald-200">
+            <Database className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h4 className="font-bold text-slate-900 text-sm">Database Terhubung: Google Sheets</h4>
+              <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-md">
+                Sheet: users
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 mt-0.5">
+              {effectiveSpreadsheetId ? (
+                <>ID: <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded border border-emerald-200 text-slate-700">{effectiveSpreadsheetId}</code></>
+              ) : (
+                <span className="text-amber-700 font-medium">ID Spreadsheet belum dikonfigurasi. Silakan cek menu Migrasi / Pengaturan.</span>
+              )}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {effectiveSpreadsheetId && (
+            <a
+              href={`https://docs.google.com/spreadsheets/d/${effectiveSpreadsheetId}/edit#gid=0`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:text-emerald-700 hover:border-emerald-300 transition-all shadow-sm"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Buka di Google Drive
+            </a>
+          )}
+        </div>
+      </div>
+
+      {/* Sync Self Banner if current admin is not yet in users sheet */}
+      {!loading && !isCurrentProfileInUsers && profile && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-100 text-amber-800 rounded-xl">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-amber-900">Akun Anda ({profile.displayName || profile.email}) belum tersinkronisasi di sheet 'users'</p>
+              <p className="text-xs text-amber-700">Daftarkan akun ini agar terdata secara resmi sebagai Admin di Google Spreadsheet.</p>
+            </div>
+          </div>
+          <button
+            onClick={handleSyncMyProfile}
+            disabled={isSyncingSelf}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm whitespace-nowrap disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {isSyncingSelf ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+            Sinkronkan Akun Saya
+          </button>
+        </div>
+      )}
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4">
+        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Pengguna</p>
+          <p className="text-2xl font-black text-slate-900 mt-1">{stats.total}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+          <p className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Terverifikasi</p>
+          <p className="text-2xl font-black text-emerald-700 mt-1">{stats.verified}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+          <p className="text-xs font-bold text-amber-600 uppercase tracking-wider">Menunggu</p>
+          <p className="text-2xl font-black text-amber-700 mt-1">{stats.pending}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+          <p className="text-xs font-bold text-purple-600 uppercase tracking-wider">Admin</p>
+          <p className="text-2xl font-black text-purple-700 mt-1">{stats.admins}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm col-span-2 sm:col-span-1">
+          <p className="text-xs font-bold text-blue-600 uppercase tracking-wider">Pengurus</p>
+          <p className="text-2xl font-black text-blue-700 mt-1">{stats.pengurus}</p>
+        </div>
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Cari berdasarkan nama, email, role, atau lokasi..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0">
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value as any)}
+            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <option value="all">Semua Peran</option>
+            <option value="admin">Admin</option>
+            <option value="pengurus">Pengurus</option>
+          </select>
+
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            <button
+              onClick={() => setStatusFilter('all')}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                statusFilter === 'all' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              Semua
+            </button>
+            <button
+              onClick={() => setStatusFilter('verified')}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                statusFilter === 'verified' ? "bg-white text-emerald-700 shadow-sm" : "text-slate-500 hover:text-emerald-700"
+              )}
+            >
+              Terverifikasi
+            </button>
+            <button
+              onClick={() => setStatusFilter('pending')}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                statusFilter === 'pending' ? "bg-white text-amber-700 shadow-sm" : "text-slate-500 hover:text-amber-700"
+              )}
+            >
+              Menunggu
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* User Table */}
       <div className="bg-white rounded-3xl overflow-hidden border border-slate-100 shadow-sm">
         <table className="w-full text-left">
           <thead className="bg-slate-50 border-b border-slate-100">
             <tr>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Nama</th>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Email</th>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Role</th>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Lokasi</th>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Verifikasi</th>
-              <th className="px-6 py-4 text-sm font-bold text-slate-500 uppercase tracking-wider">Aksi</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Nama & Email</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Role</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Lokasi Tugas</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Status Akses</th>
+              <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Aksi</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {users.map((u) => (
-              <tr key={u.uid} className="hover:bg-slate-50 transition-colors">
-                <td className="px-6 py-4 font-bold text-slate-900">{u.displayName}</td>
-                <td className="px-6 py-4 text-slate-600">{u.email}</td>
-                <td className="px-6 py-4">
-                  <span className={cn(
-                    "px-3 py-1 rounded-full text-xs font-bold uppercase",
-                    u.role === 'admin' ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"
-                  )}>
-                    {u.role}
-                  </span>
-                </td>
-                <td className="px-6 py-4 text-slate-600 font-medium">{u.location || '-'}</td>
-                <td className="px-6 py-4">
-                  <button 
-                    onClick={() => toggleVerify(u.uid, u.isVerified)}
-                    className={cn(
-                      "px-3 py-1 rounded-full text-[10px] font-black uppercase transition-all",
-                      u.isVerified 
-                        ? "bg-emerald-100 text-emerald-700" 
-                        : "bg-amber-100 text-amber-700 hover:bg-emerald-100"
-                    )}
-                  >
-                    {u.isVerified ? 'Terverifikasi' : 'Belum'}
-                  </button>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex gap-3">
-                    <button onClick={() => setEditingUser(u)} className="text-emerald-600 hover:text-emerald-700 font-bold text-sm">Edit</button>
-                    <button onClick={() => setDeleteId(u.uid)} className="text-red-500 hover:text-red-600 font-bold text-sm">Hapus</button>
+            {loading ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-12 text-center">
+                  <div className="flex flex-col items-center justify-center gap-2">
+                    <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
+                    <p className="text-xs font-semibold text-slate-500">Membaca data pengguna dari Google Sheets...</p>
                   </div>
                 </td>
               </tr>
-            ))}
+            ) : filteredUsers.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-6 py-12 text-center">
+                  <div className="max-w-md mx-auto space-y-3">
+                    <p className="text-slate-400 font-medium text-sm">
+                      {searchTerm || roleFilter !== 'all' || statusFilter !== 'all' 
+                        ? 'Tidak ada pengguna yang cocok dengan kriteria pencarian.' 
+                        : 'Belum ada data pengguna yang tersimpan di Google Sheets.'}
+                    </p>
+                    {!users.length && (
+                      <div className="flex justify-center gap-2">
+                        {profile && (
+                          <button
+                            onClick={handleSyncMyProfile}
+                            className="px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition-all shadow-sm"
+                          >
+                            Daftarkan Akun Saya
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setShowAddForm(true)}
+                          className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-xl hover:bg-slate-800 transition-all shadow-sm"
+                        >
+                          Tambah Pengguna Baru
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              paginatedUsers.map((u) => {
+                const userId = u.uid || u.id;
+                const isVerified = u.isVerified === true || (u.isVerified as any) === 'true' || (u.isVerified as any) === 'TRUE';
+                const isCurrentUser = profile && (profile.uid === userId || (profile.email && u.email && profile.email.toLowerCase() === u.email.toLowerCase()));
+
+                return (
+                  <tr key={userId} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs shadow-sm",
+                          u.role === 'admin' ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"
+                        )}>
+                          {(u.displayName || u.email || 'U').charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-slate-900 text-sm">{u.displayName || '-'}</span>
+                            {isCurrentUser && (
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full">
+                                Anda
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-xs text-slate-500 block font-mono">{u.email}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={cn(
+                        "px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wide",
+                        u.role === 'admin' ? "bg-purple-100 text-purple-700" : "bg-blue-100 text-blue-700"
+                      )}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-sm font-medium text-slate-700">
+                        {u.location ? (
+                          <span className="inline-flex items-center gap-1">
+                            <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                            {u.location}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-xs italic">Semua Lokasi (Global)</span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <button 
+                        onClick={() => toggleVerify(userId, isVerified)}
+                        title="Klik untuk mengubah status verifikasi di Google Sheets"
+                        className={cn(
+                          "px-3 py-1 rounded-full text-[11px] font-bold uppercase transition-all flex items-center gap-1.5 cursor-pointer shadow-sm",
+                          isVerified 
+                            ? "bg-emerald-100 text-emerald-800 hover:bg-amber-100 hover:text-amber-800" 
+                            : "bg-amber-100 text-amber-800 hover:bg-emerald-100 hover:text-emerald-800"
+                        )}
+                      >
+                        {isVerified ? (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            Terverifikasi
+                          </>
+                        ) : (
+                          <>
+                            <Clock className="w-3.5 h-3.5 text-amber-600" />
+                            Menunggu Verifikasi
+                          </>
+                        )}
+                      </button>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => setEditingUser(u)} 
+                          className="px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-700 text-slate-600 rounded-lg font-bold text-xs transition-colors"
+                        >
+                          Edit
+                        </button>
+                        <button 
+                          onClick={() => setDeleteId(userId)} 
+                          className="px-3 py-1.5 bg-slate-100 hover:bg-red-50 hover:text-red-600 text-slate-500 rounded-lg font-bold text-xs transition-colors"
+                        >
+                          Hapus
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
+        <Pagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filteredUsers.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+          onPageSizeChange={setPageSize}
+          pageSizeOptions={[10, 20, 50]}
+          className="px-6 py-4 bg-white border-t border-slate-100"
+        />
       </div>
 
+      {/* Modal Tambah Pengguna */}
       <AnimatePresence>
-        {editingUser && (
+        {showAddForm && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
             <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl">
-              <h3 className="text-xl font-bold mb-6">Edit Profil Pengguna</h3>
-              <form onSubmit={handleUpdate} className="space-y-4">
+              <div className="flex items-center justify-between mb-6">
                 <div>
-                  <label className="block text-sm font-medium mb-1">Nama Tampilan</label>
-                  <input name="displayName" defaultValue={editingUser.displayName} required className="w-full px-4 py-2 rounded-xl border outline-none" />
+                  <h3 className="text-xl font-bold text-slate-900">Tambah Pengguna Baru</h3>
+                  <p className="text-xs text-slate-500">Data akan langsung disimpan sebagai baris baru di Google Sheets</p>
+                </div>
+                <button onClick={() => setShowAddForm(false)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleAddUser} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Nama Tampilan</label>
+                  <input name="displayName" placeholder="Contoh: Ustadz Ahmad Hidayat" required className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm" />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">Role</label>
-                  <select name="role" defaultValue={editingUser.role} className="w-full px-4 py-2 rounded-xl border outline-none">
-                    <option value="admin">Admin</option>
-                    <option value="pengurus">Pengurus</option>
-                  </select>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Email</label>
+                  <input type="email" name="email" placeholder="nama@gmail.com" required className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">Peran (Role)</label>
+                    <select name="role" defaultValue="pengurus" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
+                      <option value="admin">Admin</option>
+                      <option value="pengurus">Pengurus</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1">Status Verifikasi</label>
+                    <select name="isVerified" defaultValue="true" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
+                      <option value="true">Langsung Aktif</option>
+                      <option value="false">Menunggu Verifikasi</option>
+                    </select>
+                  </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">Lokasi (Khusus Pengurus)</label>
-                  <select name="location" defaultValue={editingUser.location} className="w-full px-4 py-2 rounded-xl border outline-none">
-                    <option value="">Pilih Lokasi</option>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Lokasi Tugas (Khusus Pengurus)</label>
+                  <select name="location" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
+                    <option value="">Semua Lokasi / Tidak Terbatas</option>
                     {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
                       <option key={l} value={l}>{l}</option>
                     ))}
                   </select>
                 </div>
+
+                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 text-xs text-emerald-800 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>Data pengguna akan langsung tersimpan di Google Spreadsheet (Sheet <strong>users</strong>).</span>
+                </div>
+
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditingUser(null)} className="flex-1 px-6 py-2.5 rounded-xl border font-semibold">Batal</button>
-                  <button type="submit" className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold">Simpan</button>
+                  <button type="button" onClick={() => setShowAddForm(false)} className="flex-1 px-6 py-2.5 rounded-xl border border-slate-200 font-semibold text-slate-600 text-sm">Batal</button>
+                  <button type="submit" disabled={isSaving} className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold text-sm disabled:opacity-50 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-200">
+                    {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {isSaving ? 'Menyimpan...' : 'Tambah ke Spreadsheet'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {/* Modal Edit Pengguna */}
+        {editingUser && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">Edit Profil Pengguna</h3>
+                  <p className="text-xs text-slate-500">Perubahan akan langsung diperbarui pada Google Sheets</p>
+                </div>
+                <button onClick={() => setEditingUser(null)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdate} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Nama Tampilan</label>
+                  <input name="displayName" defaultValue={editingUser.displayName} required className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Email (Hanya Baca)</label>
+                  <input value={editingUser.email} disabled className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-500 text-sm font-mono cursor-not-allowed" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Peran (Role)</label>
+                  <select name="role" defaultValue={editingUser.role} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
+                    <option value="admin">Admin</option>
+                    <option value="pengurus">Pengurus</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Lokasi Tugas (Khusus Pengurus)</label>
+                  <select name="location" defaultValue={editingUser.location || ''} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
+                    <option value="">Semua Lokasi / Tidak Terbatas</option>
+                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
+                      <option key={l} value={l}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <button type="button" onClick={() => setEditingUser(null)} className="flex-1 px-6 py-2.5 rounded-xl border border-slate-200 font-semibold text-slate-600 text-sm">Batal</button>
+                  <button type="submit" disabled={isSaving} className="flex-1 px-6 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold text-sm disabled:opacity-50 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-200">
+                    {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {isSaving ? 'Menyimpan...' : 'Simpan Perubahan'}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -2950,18 +4380,22 @@ function UsersView() {
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         onConfirm={async () => {
-          if (!deleteId || !db) return;
+          if (!deleteId) return;
           setIsDeleting(true);
           try {
-            await deleteDoc(doc(db, 'users', deleteId));
+            await deleteData(null, activeToken, effectiveSpreadsheetId, 'users', deleteId);
+            clearSheetMemoryCache('users');
+            showToast('Pengguna berhasil dihapus dari Google Sheets!', 'success');
             setDeleteId(null);
+          } catch (err: any) {
+            showToast(`Gagal menghapus pengguna dari spreadsheet: ${err.message}`, 'error');
           } finally {
             setIsDeleting(false);
           }
         }}
         loading={isDeleting}
-        title="Hapus Pengguna"
-        message="Hapus akses pengguna ini? Pengguna tidak akan dapat mengakses dashboard ini lagi."
+        title="Hapus Pengguna dari Spreadsheet"
+        message="Hapus akses pengguna ini dari Google Sheets? Pengguna tidak akan dapat mengakses dashboard ini lagi."
       />
     </div>
   );
@@ -2969,73 +4403,560 @@ function UsersView() {
 
 // --- Main Layout ---
 
+  const MigrationView = ({ profile }: { profile: UserProfile }) => {
+    const { accessToken, googleSignIn, setSpreadsheetId, spreadsheetId } = useFirebase();
+    const [status, setStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
+    const [logs, setLogs] = useState<string[]>([]);
+    const [inputSpreadsheetId, setInputSpreadsheetId] = useState(spreadsheetId || '');
+    const envSpreadsheetId = (import.meta as any).env?.VITE_SPREADSHEET_ID || '';
+    const [saveIdSuccess, setSaveIdSuccess] = useState(false);
+
+    const envScriptUrl = (import.meta as any).env?.VITE_APPS_SCRIPT_URL || '';
+    const [inputScriptUrl, setInputScriptUrl] = useState(localStorage.getItem('app_script_url') || envScriptUrl);
+    const [saveScriptSuccess, setSaveScriptSuccess] = useState(false);
+    const [copiedScript, setCopiedScript] = useState(false);
+
+    useEffect(() => {
+      if (spreadsheetId) {
+        setInputSpreadsheetId(spreadsheetId);
+      }
+    }, [spreadsheetId]);
+
+    const addLog = (msg: string) => setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+
+    const handleSaveManualId = (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = inputSpreadsheetId.trim();
+      setSpreadsheetId(trimmed || null);
+      setSaveIdSuccess(true);
+      setTimeout(() => setSaveIdSuccess(false), 3000);
+    };
+
+    const handleSaveScriptUrl = (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = inputScriptUrl.trim();
+      if (trimmed) {
+        localStorage.setItem('app_script_url', trimmed);
+      } else {
+        localStorage.removeItem('app_script_url');
+      }
+      setSaveScriptSuccess(true);
+      setTimeout(() => setSaveScriptSuccess(false), 3000);
+    };
+
+    const appsScriptCode = `// KODE GOOGLE APPS SCRIPT (UNTUK AKSES BEBAS LOGIN & BEBAS TOKEN)
+function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = data.collection || 'data';
+    var sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+    
+    if (data.action === 'save') {
+      var item = data.item;
+      var rows = sheet.getDataRange().getValues();
+      var headers = rows.length > 0 && rows[0][0] !== '' ? rows[0] : [];
+      
+      var itemKeys = Object.keys(item);
+      var newHeaders = headers.slice();
+      itemKeys.forEach(function(k) {
+        if (newHeaders.indexOf(k) === -1) newHeaders.push(k);
+      });
+      
+      if (newHeaders.length > headers.length || headers.length === 0) {
+        headers = newHeaders;
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      }
+      
+      var idIndex = headers.indexOf('id');
+      if (idIndex === -1) idIndex = headers.indexOf('uid');
+      var existingRow = -1;
+      if (idIndex !== -1 && rows.length > 1) {
+        for (var i = 1; i < rows.length; i++) {
+          if (String(rows[i][idIndex]) === String(data.id)) {
+            existingRow = i + 1;
+            break;
+          }
+        }
+      }
+      
+      var rowData = headers.map(function(h) {
+        var val = item[h];
+        if (val === undefined || val === null) return '';
+        if (typeof val === 'object') return JSON.stringify(val);
+        return val;
+      });
+      
+      if (existingRow !== -1) {
+        sheet.getRange(existingRow, 1, 1, rowData.length).setValues([rowData]);
+      } else {
+        sheet.appendRow(rowData);
+      }
+      return ContentService.createTextOutput(JSON.stringify({ status: 'success', id: data.id })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    if (data.action === 'delete') {
+      var rows = sheet.getDataRange().getValues();
+      var headers = rows.length > 0 ? rows[0] : [];
+      var idIndex = headers.indexOf('id');
+      if (idIndex === -1) idIndex = headers.indexOf('uid');
+      if (idIndex !== -1) {
+        for (var i = 1; i < rows.length; i++) {
+          if (String(rows[i][idIndex]) === String(data.id)) {
+            sheet.deleteRow(i + 1);
+            break;
+          }
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ status: 'success' })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ status: 'unknown_action' })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doGet(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetName = (e && e.parameter && (e.parameter.collection || e.parameter.sheet)) || 'jamaah';
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      return ContentService.createTextOutput(JSON.stringify({ values: [] })).setMimeType(ContentService.MimeType.JSON);
+    }
+    var values = sheet.getDataRange().getValues();
+    return ContentService.createTextOutput(JSON.stringify({ values: values })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ values: [], error: err.toString() })).setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+
+    const handleCopyCode = () => {
+      navigator.clipboard.writeText(appsScriptCode);
+      setCopiedScript(true);
+      setTimeout(() => setCopiedScript(false), 3000);
+    };
+
+    const runMigration = async () => {
+      if (!accessToken) return;
+      setStatus('running');
+      setLogs([]);
+      
+      try {
+        addLog('Memulai pembuatan database Google Sheets baru...');
+        
+        // 1. Create Spreadsheet
+        addLog('Membuat file Spreadsheet di Google Drive...');
+        const spreadsheet = await createSpreadsheet(accessToken, 'Database Mosque Management');
+        const newSpreadsheetId = spreadsheet.spreadsheetId;
+        addLog(`Spreadsheet berhasil dibuat! ID: ${newSpreadsheetId}`);
+
+        // 2. Setup standard tables
+        const collections = [
+          { name: 'jamaah', headers: ['id', 'memberId', 'name', 'phone', 'location', 'category', 'gender', 'createdAt'] },
+          { name: 'attendance', headers: ['id', 'jamaahId', 'jamaahName', 'location', 'category', 'date', 'sessionType', 'day', 'status', 'reason'] },
+          { name: 'assets', headers: ['id', 'name', 'code', 'category', 'condition', 'location', 'quantity', 'purchaseDate', 'value'] },
+          { name: 'activities', headers: ['id', 'title', 'description', 'date', 'time', 'location', 'speaker', 'category'] },
+          { name: 'facility_stats', headers: ['id', 'facilityName', 'capacity', 'status', 'lastCleaned'] },
+          { name: 'ub_shopping', headers: ['id', 'itemName', 'quantity', 'estimatedCost', 'requestedBy', 'status', 'createdAt'] },
+          { name: 'users', headers: ['uid', 'id', 'email', 'displayName', 'role', 'location', 'isVerified', 'createdAt', 'spreadsheetId'] }
+        ];
+
+        for (const col of collections) {
+          addLog(`Inisialisasi tabel '${col.name}'...`);
+          await updateSheetValues(accessToken, newSpreadsheetId, `${col.name}!A1`, [col.headers]).catch(() => {});
+        }
+
+        if (profile) {
+          const userRow = { ...profile, spreadsheetId: newSpreadsheetId, id: profile.uid };
+          const headers = ['uid', 'id', 'email', 'displayName', 'role', 'location', 'isVerified', 'createdAt', 'spreadsheetId'];
+          const values = [headers, headers.map(h => (userRow as any)[h] ?? '')];
+          await updateSheetValues(accessToken, newSpreadsheetId, `users!A1`, values).catch(() => {});
+        }
+
+        setSpreadsheetId(newSpreadsheetId);
+        addLog('Setup Selesai! Firestore kini dinonaktifkan sepenuhnya dan data dikelola 100% via Google Sheets.');
+        setStatus('success');
+      } catch (error: any) {
+        console.error(error);
+        addLog(`Error: ${error.message}`);
+        setStatus('error');
+      }
+    };
+
+    return (
+      <div className="max-w-2xl mx-auto py-12">
+        <div className="bg-white rounded-[2.5rem] p-10 shadow-xl border border-slate-100">
+          <div className="flex items-center gap-6 mb-10">
+            <div className="p-4 bg-emerald-100 rounded-3xl">
+              <CloudCog className="w-10 h-10 text-emerald-600" />
+            </div>
+            <div>
+              <h2 className="text-3xl font-black text-slate-900 leading-tight">Migrasi Database</h2>
+              <p className="text-slate-500 font-medium">Pindahkan seluruh data dari Firestore ke Google Sheets</p>
+            </div>
+          </div>
+
+          <div className="space-y-8">
+            {!accessToken ? (
+              <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-100">
+                <p className="text-slate-600 font-bold mb-6 text-center">Hubungkan akun Google Anda untuk memulai migrasi.</p>
+                <button 
+                  onClick={googleSignIn}
+                  className="w-full py-4 bg-white border-2 border-slate-100 rounded-2xl flex items-center justify-center gap-4 hover:border-emerald-500 transition-all group"
+                >
+                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-6 h-6" alt="Google" />
+                  <span className="font-black uppercase tracking-widest text-slate-700 group-hover:text-emerald-600">Hubungkan Google Sheets</span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex items-center gap-4 p-4 bg-emerald-50 rounded-2xl text-emerald-700 border border-emerald-100">
+                  <CheckCircle2 className="w-5 h-5" />
+                  <p className="text-sm font-black uppercase tracking-widest">Akun Google Terhubung</p>
+                </div>
+
+                <button 
+                  onClick={runMigration}
+                  disabled={status === 'running'}
+                  className={cn(
+                    "w-full py-6 rounded-[1.8rem] font-black uppercase tracking-widest flex items-center justify-center gap-4 transition-all shadow-xl",
+                    status === 'running' ? "bg-slate-100 text-slate-400 cursor-not-allowed" : "bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-200"
+                  )}
+                >
+                  {status === 'running' ? (
+                    <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-6 h-6 border-4 border-slate-300 border-t-slate-500 rounded-full" />
+                  ) : (
+                    <>
+                      <Database className="w-6 h-6" />
+                      Mulai Migrasi Data
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {(logs.length > 0 || status === 'running') && (
+              <div className="bg-slate-900 rounded-[2rem] p-6 font-mono text-xs text-emerald-400 space-y-2 max-h-60 overflow-y-auto shadow-inner">
+                {logs.map((log, i) => (
+                  <div key={i} className="opacity-80 leading-relaxed">{log}</div>
+                ))}
+                {status === 'running' && <div className="animate-pulse">_</div>}
+              </div>
+            )}
+
+            {status === 'success' && (
+              <div className="p-6 bg-emerald-50 rounded-2xl border border-emerald-100 text-center">
+                <p className="text-emerald-800 font-black text-sm uppercase tracking-widest mb-2">🎉 Migrasi Berhasil!</p>
+                <p className="text-emerald-600 text-xs font-medium">Data Anda sekarang tersimpan di Google Sheets. Sistem akan otomatis beralih menggunakan spreadsheet.</p>
+              </div>
+            )}
+
+            {/* Pengaturan ID Spreadsheet & Environment Variable */}
+            <div className="p-6 bg-slate-50 rounded-[2rem] border border-slate-200 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-slate-800 text-sm">Google Spreadsheet ID</h4>
+                  <p className="text-xs text-slate-500">ID spreadsheet yang digunakan sebagai database utama aplikasi</p>
+                </div>
+                {envSpreadsheetId ? (
+                  <span className="px-3 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-bold rounded-full">
+                    Tersimpan di .env
+                  </span>
+                ) : (
+                  <span className="px-3 py-1 bg-slate-200 text-slate-700 text-[11px] font-medium rounded-full">
+                    Penyimpanan Browser
+                  </span>
+                )}
+              </div>
+
+              <form onSubmit={handleSaveManualId} className="space-y-3">
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    value={inputSpreadsheetId}
+                    onChange={(e) => setInputSpreadsheetId(e.target.value)}
+                    placeholder="Contoh: 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                  />
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-slate-900 text-white text-xs font-bold rounded-xl hover:bg-slate-800 transition-all shadow-sm"
+                  >
+                    Simpan ID
+                  </button>
+                </div>
+
+                {saveIdSuccess && (
+                  <p className="text-xs text-emerald-600 font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> ID Spreadsheet berhasil diperbarui!
+                  </p>
+                )}
+              </form>
+
+              <div className="p-3.5 bg-blue-50/70 rounded-xl border border-blue-100 text-xs text-blue-800 space-y-1">
+                <p className="font-bold">💡 Tips Permanen (Bebas Token):</p>
+                <p className="text-slate-600 leading-relaxed">
+                  Tambahkan <code className="bg-blue-100 px-1.5 py-0.5 rounded font-mono text-blue-900">VITE_SPREADSHEET_ID=ID_SPREADSHEET_ANDA</code> pada file <strong>.env</strong>. Dengan cara ini, semua pengguna dan role (Admin, Pengurus, dsb) akan otomatis terhubung ke database yang sama tanpa perlu login ulang Google atau bergantung pada token sesi!
+                </p>
+              </div>
+            </div>
+
+            {/* Pengaturan Google Apps Script (Bebas Login & Bebas Token 100%) */}
+            <div className="p-6 bg-gradient-to-br from-emerald-50/70 to-teal-50/40 rounded-[2rem] border border-emerald-200/80 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                    <span>⚡ Mode Bebas Token (Apps Script Web App)</span>
+                  </h4>
+                  <p className="text-xs text-slate-600">Simpan & baca data Google Sheets 100% tanpa perlu login akun Google berulang kali</p>
+                </div>
+                {inputScriptUrl ? (
+                  <span className="px-3 py-1 bg-emerald-600 text-white text-[11px] font-black rounded-full flex items-center gap-1 shadow-sm">
+                    <CheckCircle2 className="w-3 h-3" /> Bebas Token Aktif
+                  </span>
+                ) : (
+                  <span className="px-3 py-1 bg-slate-200 text-slate-700 text-[11px] font-medium rounded-full">
+                    Opsional
+                  </span>
+                )}
+              </div>
+
+              <form onSubmit={handleSaveScriptUrl} className="space-y-3">
+                <div className="flex gap-2">
+                  <input 
+                    type="url"
+                    value={inputScriptUrl}
+                    onChange={(e) => setInputScriptUrl(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-emerald-300 text-xs font-mono outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                  />
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-emerald-700 text-white text-xs font-bold rounded-xl hover:bg-emerald-800 transition-all shadow-sm flex items-center gap-1.5"
+                  >
+                    Simpan URL
+                  </button>
+                </div>
+
+                {saveScriptSuccess && (
+                  <p className="text-xs text-emerald-700 font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> URL Web App berhasil disimpan! Sekarang data tersimpan tanpa token.
+                  </p>
+                )}
+              </form>
+
+              <div className="p-4 bg-white/90 rounded-xl border border-emerald-100 text-xs space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800">Langkah Memasang Skrip (Hanya 1 Menit):</span>
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="px-3 py-1.5 bg-slate-900 text-white hover:bg-slate-800 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm"
+                  >
+                    {copiedScript ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Tersalin!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Salin Kode Skrip</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                <ol className="list-decimal list-inside space-y-1.5 text-slate-600 leading-relaxed text-[11px]">
+                  <li>Buka spreadsheet Anda di Google Drive.</li>
+                  <li>Klik menu <strong>Ekstensi (Extensions)</strong> &gt; <strong>Apps Script</strong>.</li>
+                  <li>Hapus kode yang ada, lalu tempel (Paste) kode yang disalin dari tombol di atas.</li>
+                  <li>Klik tombol <strong>Terapkan (Deploy)</strong> di pojok kanan atas &gt; <strong>Penerapan Baru (New deployment)</strong>.</li>
+                  <li>Pilih jenis <strong>Aplikasi Web (Web App)</strong>. Pada bagian <em>Akses (Who has access)</em>, pilih <strong>Siapa saja (Anyone)</strong>.</li>
+                  <li>Klik <strong>Terapkan (Deploy)</strong>, lalu salin URL Web App (akhiran <code className="bg-slate-100 px-1 font-mono text-slate-800">/exec</code>) dan tempel pada input di atas!</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+function UnverifiedAccountView({ 
+  profile, 
+  onCheckStatus, 
+  onSignOut 
+}: { 
+  profile: any; 
+  onCheckStatus: () => Promise<void>; 
+  onSignOut: () => void; 
+}) {
+  const [checking, setChecking] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const checkRef = React.useRef(onCheckStatus);
+  useEffect(() => {
+    checkRef.current = onCheckStatus;
+  }, [onCheckStatus]);
+
+  // Auto-polling verification status from Google Sheets every 6 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      checkRef.current?.().catch(() => {});
+    }, 6000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleManualCheck = async () => {
+    setChecking(true);
+    setFeedback(null);
+    try {
+      await onCheckStatus();
+      setFeedback('Status berhasil disinkronkan dengan Google Sheets');
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (err: any) {
+      setFeedback('Gagal memeriksa status: ' + (err.message || 'Coba lagi'));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white p-8 md:p-10 rounded-3xl shadow-xl max-w-md w-full border border-slate-100 text-center"
+      >
+        <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-5">
+          <AlertCircle className="w-8 h-8" />
+        </div>
+        <h2 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Akun Menunggu Verifikasi</h2>
+        <p className="text-slate-500 mb-6 font-medium text-sm leading-relaxed">
+          Pendaftaran berhasil! Akun Anda telah dicatat di database dan sedang menunggu verifikasi dari admin sebelum dapat mengakses sistem.
+        </p>
+
+        {/* Ringkasan Data Akun Terdaftar */}
+        <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 mb-6 text-left space-y-2.5 text-xs">
+          <div className="flex justify-between items-center">
+            <span className="text-slate-500 font-medium">Nama Lengkap</span>
+            <span className="font-bold text-slate-900">{profile?.displayName || '-'}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-slate-500 font-medium">Email</span>
+            <span className="font-bold text-slate-900">{profile?.email || '-'}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-slate-500 font-medium">Role</span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-700 capitalize">
+              {profile?.role || 'pengurus'}
+            </span>
+          </div>
+          {profile?.role === 'pengurus' && (
+            <div className="flex justify-between items-center">
+              <span className="text-slate-500 font-medium">Lokasi Tugas</span>
+              <span className="font-bold text-slate-900">{profile?.location || '-'}</span>
+            </div>
+          )}
+          <div className="flex justify-between items-center pt-2 border-t border-slate-200">
+            <span className="text-slate-500 font-medium">Status Verifikasi</span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-100 text-amber-700">
+              Belum Terverifikasi
+            </span>
+          </div>
+        </div>
+
+        {feedback && (
+          <p className="text-xs font-semibold text-emerald-600 mb-4 animate-pulse">{feedback}</p>
+        )}
+
+        <div className="space-y-3">
+          <button 
+            type="button"
+            onClick={handleManualCheck}
+            disabled={checking}
+            className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-bold text-sm hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-200 disabled:opacity-50"
+          >
+            {checking ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Memeriksa Status...</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-4 h-4" />
+                <span>Cek Status Verifikasi</span>
+              </>
+            )}
+          </button>
+
+          <button 
+            type="button"
+            onClick={onSignOut}
+            className="w-full py-3.5 bg-slate-100 text-slate-700 rounded-2xl font-bold text-sm hover:bg-slate-200 transition-all"
+          >
+            Keluar
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function DashboardContent() {
-  const { user, db, auth } = useFirebase();
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const { user, db, auth, profile, spreadsheetId, syncProfileFromSheet, loading: authLoading } = useFirebase();
   const [activeTab, setActiveTab] = useState('overview');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [formTrigger, setFormTrigger] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [isAttendanceMode, setIsAttendanceMode] = useState(false);
 
-  useEffect(() => {
-    if (user && db) {
-      const fetchProfile = async () => {
-        const docRef = doc(db, 'users', user.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setProfile(docSnap.data() as UserProfile);
-        }
-        setLoading(false);
-      };
-      fetchProfile();
-    } else if (!user) {
-      setLoading(false);
+  const handleCheckStatus = useCallback(async () => {
+    if (syncProfileFromSheet && user?.uid) {
+      await syncProfileFromSheet(user.uid);
     }
-  }, [user, db]);
+  }, [syncProfileFromSheet, user?.uid]);
 
-  if (loading) return (
+  if (authLoading) return (
     <div className="min-h-screen flex items-center justify-center">
       <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full" />
     </div>
   );
 
   if (isAttendanceMode) {
-    return <PublicAttendanceView onBack={() => setIsAttendanceMode(false)} />;
+    return <PublicAttendanceView onBack={() => setIsAttendanceMode(false)} spreadsheetId={spreadsheetId || undefined} />;
   }
 
   if (!user || !profile) return <LoginView onAttendanceMode={() => setIsAttendanceMode(true)} />;
 
-  if (!profile.isVerified) {
+  const isUserVerified = profile.isVerified === true || (profile.isVerified as any) === 'true' || (profile.isVerified as any) === 'TRUE';
+
+  if (!isUserVerified) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 text-center">
-        <div className="bg-white p-10 rounded-3xl shadow-xl max-w-sm border border-slate-100">
-          <AlertCircle className="w-16 h-16 text-amber-500 mx-auto mb-6" />
-          <h2 className="text-2xl font-bold text-slate-900 mb-4 tracking-tight">Akun Belum Aktif</h2>
-          <p className="text-slate-500 mb-8 font-medium leading-relaxed">Akun Anda sedang menunggu verifikasi dari admin. Silakan hubungi admin untuk aktivasi agar dapat mengakses dashboard.</p>
-          <button 
-            onClick={() => auth && signOut(auth)} 
-            className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200"
-          >
-            Keluar
-          </button>
-        </div>
-      </div>
+      <UnverifiedAccountView 
+        profile={profile} 
+        onCheckStatus={handleCheckStatus}
+        onSignOut={() => auth && signOut(auth)} 
+      />
     );
   }
 
   const renderContent = () => {
+    const profileWithSheet = { ...profile, spreadsheetId };
+
     switch (activeTab) {
-      case 'overview': return <Overview profile={profile} />;
-      case 'jamaah': return <JamaahView profile={profile} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} />;
-      case 'inventaris': return <InventarisView profile={profile} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} assetType="barang" />;
-      case 'tanah': return <InventarisView profile={profile} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} assetType="tanah" />;
-      case 'activities': return <ActivitiesView profile={profile} />;
-      case 'facilities': return <FacilityView profile={profile} />;
-      case 'attendance_report': return <AttendanceReportView profile={profile} />;
-      case 'ub_shopping': return <UBShoppingView profile={profile} />;
-      case 'users': return <UsersView />;
-      default: return <Overview profile={profile} />;
+      case 'overview': return <Overview profile={profileWithSheet} />;
+      case 'jamaah': return <JamaahView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} />;
+      case 'inventaris': return <InventarisView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} assetType="barang" />;
+      case 'tanah': return <InventarisView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} assetType="tanah" />;
+      case 'activities': return <ActivitiesView profile={profileWithSheet} />;
+      case 'facilities': return <FacilityView profile={profileWithSheet} />;
+      case 'attendance_report': return <AttendanceReportView profile={profileWithSheet} />;
+      case 'ub_shopping': return <UBShoppingView profile={profileWithSheet} />;
+      case 'users': return <UsersView profile={profileWithSheet} />;
+      case 'migration': return <MigrationView profile={profile} />;
+      default: return <Overview profile={profileWithSheet} />;
     }
   };
 
@@ -3061,9 +4982,14 @@ function DashboardContent() {
           <SidebarItem icon={Clock} label="Fasilitas" active={activeTab === 'facilities'} onClick={() => setActiveTab('facilities')} />
           <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => setActiveTab('attendance_report')} />
           <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => setActiveTab('ub_shopping')} />
-          {profile.role === 'admin' && (
-            <SidebarItem icon={Plus} label="Pengguna" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
-          )}
+          
+          <div className="pt-3 pb-1">
+            <div className="h-[1px] bg-slate-100 mb-2" />
+            <span className="px-3 text-[10px] font-black uppercase tracking-wider text-slate-400">Sistem & Akses</span>
+          </div>
+
+          <SidebarItem icon={UserCheck} label="Pengguna (User)" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
+          <SidebarItem icon={Database} label="Migrasi Database" active={activeTab === 'migration'} onClick={() => setActiveTab('migration')} />
         </nav>
         
         <div className="p-6 border-t border-slate-50">
@@ -3123,9 +5049,14 @@ function DashboardContent() {
                 <SidebarItem icon={Clock} label="Fasilitas" active={activeTab === 'facilities'} onClick={() => { setActiveTab('facilities'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => { setActiveTab('attendance_report'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => { setActiveTab('ub_shopping'); setIsMobileMenuOpen(false); }} />
-                {profile.role === 'admin' && (
-                  <SidebarItem icon={Plus} label="Pengguna" active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }} />
-                )}
+                
+                <div className="pt-3 pb-1">
+                  <div className="h-[1px] bg-slate-100 mb-2" />
+                  <span className="px-3 text-[10px] font-black uppercase tracking-wider text-slate-400">Sistem & Akses</span>
+                </div>
+
+                <SidebarItem icon={UserCheck} label="Pengguna (User)" active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }} />
+                <SidebarItem icon={Database} label="Migrasi Database" active={activeTab === 'migration'} onClick={() => { setActiveTab('migration'); setIsMobileMenuOpen(false); }} />
               </nav>
 
               <div className="p-6 border-t border-slate-50">
@@ -3172,6 +5103,28 @@ function DashboardContent() {
           </div>
         </header>
 
+        {!(spreadsheetId) && activeTab !== 'migration' && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-12 p-6 bg-amber-50 rounded-[2rem] border border-amber-200 flex flex-col md:flex-row items-center gap-6"
+          >
+            <div className="p-4 bg-amber-100 rounded-2xl text-amber-600">
+              <AlertCircle className="w-8 h-8" />
+            </div>
+            <div className="flex-grow text-center md:text-left">
+              <h3 className="text-lg font-black text-amber-900">Google Sheets Belum Terhubung</h3>
+              <p className="text-amber-700 font-medium">Data bisnis saat ini dikunci. Silakan lakukan migrasi database untuk mengaktifkan penyimpanan di Google Sheets.</p>
+            </div>
+            <button 
+              onClick={() => setActiveTab('migration')}
+              className="px-8 py-3 bg-amber-600 text-white rounded-xl font-black uppercase tracking-wider hover:bg-amber-700 transition-all shadow-lg shadow-amber-200 whitespace-nowrap"
+            >
+              Ke Menu Migrasi
+            </button>
+          </motion.div>
+        )}
+
         <motion.div
           key={activeTab}
           initial={{ opacity: 0, x: 20 }}
@@ -3188,7 +5141,9 @@ function DashboardContent() {
 export default function App() {
   return (
     <FirebaseProvider>
-      <DashboardContent />
+      <ToastProvider>
+        <DashboardContent />
+      </ToastProvider>
     </FirebaseProvider>
   );
 }
