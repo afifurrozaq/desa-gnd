@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { JAMAAH_CATEGORY_OPTIONS } from './constants';
+
 export type UserRole = 'admin' | 'pengurus';
 
 export type MosqueLocation = 
@@ -13,6 +15,7 @@ export type MosqueLocation =
   | 'Antena';
 
 export interface UserProfile {
+  id?: string;
   uid: string;
   email: string;
   displayName: string;
@@ -23,7 +26,7 @@ export interface UserProfile {
   spreadsheetId?: string;
 }
 
-export type JamaahCategory = 'UMUM' | 'ACR' | 'APR' | 'GPN' | 'DUDA' | 'JANDA' | string;
+export type JamaahCategory = (typeof JAMAAH_CATEGORY_OPTIONS)[number]['value'];
 
 export interface Jamaah {
   id: string;
@@ -119,6 +122,9 @@ export interface Attendance {
   status: 'hadir' | 'izin';
   reason?: string;
   isConfirmed?: boolean;
+  activityId?: string;
+  activityTitle?: string;
+  activityCategory?: string;
 }
 
 export interface UBShopping {

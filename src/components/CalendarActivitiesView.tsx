@@ -34,38 +34,17 @@ import { saveData, deleteData } from '../lib/dataService';
 import { DeleteConfirmation } from './DeleteConfirmation';
 import { cn } from '../lib/utils';
 import { parseImageUrls } from '../App';
-
-const MONTH_NAMES = [
-  'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-  'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
-];
-
-const DAY_NAMES = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Aha'];
-const DAY_FULL_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
-
-const MOSQUE_LOCATIONS: MosqueLocation[] = [
-  'Kramat Batu',
-  'Karya Utama',
-  'Radio Dalam',
-  'Cipete',
-  'Antena'
-];
-
-const ACTIVITY_CATEGORIES = [
-  { id: 'Sambung Rutin', label: 'Sambung Rutin', bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', dot: 'bg-emerald-500', badge: 'bg-emerald-500 text-white' },
-  { id: 'Musyawarah / Rapat', label: 'Musyawarah / Rapat', bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', dot: 'bg-indigo-500', badge: 'bg-indigo-500 text-white' },
-  { id: 'Kerja Bakti', label: 'Kerja Bakti', bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', dot: 'bg-amber-500', badge: 'bg-amber-500 text-white' },
-  { id: 'Pembinaan Generus', label: 'Pembinaan Generus', bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200', dot: 'bg-sky-500', badge: 'bg-sky-500 text-white' },
-  { id: 'Keputrian', label: 'Keputrian', bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200', dot: 'bg-rose-500', badge: 'bg-rose-500 text-white' },
-  { id: 'Khotmil Qur\'an', label: 'Khotmil Qur\'an', bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200', dot: 'bg-teal-500', badge: 'bg-teal-500 text-white' },
-  { id: 'Acara Khusus / Sambung Desa', label: 'Acara Khusus / Sambung', bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', dot: 'bg-purple-500', badge: 'bg-purple-500 text-white' },
-  { id: 'Olahraga & Keakraban', label: 'Olahraga & Keakraban', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', dot: 'bg-orange-500', badge: 'bg-orange-500 text-white' },
-  { id: 'Lainnya', label: 'Lainnya', bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200', dot: 'bg-slate-500', badge: 'bg-slate-600 text-white' }
-];
+import { 
+  MONTH_NAMES, 
+  DAY_NAMES, 
+  DAY_FULL_NAMES, 
+  MOSQUE_LOCATIONS, 
+  ACTIVITY_CATEGORIES 
+} from '../constants';
 
 function getCategoryMeta(catName?: string) {
   if (!catName) return ACTIVITY_CATEGORIES[ACTIVITY_CATEGORIES.length - 1];
-  const found = ACTIVITY_CATEGORIES.find(c => c.id.toLowerCase() === catName.toLowerCase() || c.label.toLowerCase() === catName.toLowerCase());
+  const found = ACTIVITY_CATEGORIES.find(c => c.id.toLowerCase() === catName.toLowerCase() || c.label.toLowerCase() === catName.toLowerCase() || catName.toLowerCase().includes(c.id.toLowerCase()));
   return found || {
     id: catName,
     label: catName,
@@ -73,7 +52,11 @@ function getCategoryMeta(catName?: string) {
     text: 'text-slate-700',
     border: 'border-slate-200',
     dot: 'bg-slate-500',
-    badge: 'bg-slate-600 text-white'
+    badge: 'bg-slate-600 text-white',
+    width: 'col-span-1 md:col-span-1',
+    height: 'min-h-[180px]',
+    cardWidth: 'w-full',
+    cardHeight: 'h-auto'
   };
 }
 
@@ -348,7 +331,7 @@ export function CalendarActivitiesView({ profile }: { profile: UserProfile }) {
     const data: Partial<Activity> = {
       title: (formData.get('title') as string).trim(),
       description: (formData.get('description') as string || '').trim(),
-      category: (formData.get('category') as string) || 'Sambung Rutin',
+      category: (formData.get('category') as string) || 'Pengajian Rutin',
       type: (formData.get('type') as string) || 'harian',
       time: (formData.get('time') as string || '').trim(),
       speaker: (formData.get('speaker') as string || '').trim(),
@@ -398,7 +381,7 @@ export function CalendarActivitiesView({ profile }: { profile: UserProfile }) {
                 </span>
               </div>
               <p className="text-slate-500 text-sm mt-1">
-                Jadwal & rencana kegiatan sabilillah, Sambung, musyawarah, dan agenda pembinaan per bulan.
+                Jadwal & rencana kegiatan sabilillah, pengajian, musyawarah, dan agenda pembinaan per bulan.
               </p>
             </div>
           </div>
@@ -814,7 +797,16 @@ export function CalendarActivitiesView({ profile }: { profile: UserProfile }) {
                     const actImages = parseImageUrls(act.imageUrls);
 
                     return (
-                      <div key={act.id} className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+                      <div 
+                        key={act.id} 
+                        className={cn(
+                          "bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden flex flex-col hover:shadow-md transition-all",
+                          meta.width,
+                          meta.height,
+                          meta.cardWidth,
+                          meta.cardHeight
+                        )}
+                      >
                         {/* Image banner */}
                         <div className="h-48 relative bg-slate-100 group overflow-hidden">
                           {actImages.length > 0 ? (
@@ -948,7 +940,7 @@ export function CalendarActivitiesView({ profile }: { profile: UserProfile }) {
                     name="title"
                     defaultValue={editingActivity?.title}
                     required
-                    placeholder="Contoh: Sambung Rutin Malam Kamis, Musyawarah Desa, dll."
+                    placeholder="Contoh: Pengajian Rutin Malam Kamis, Musyawarah Desa, dll."
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium"
                   />
                 </div>
@@ -961,7 +953,7 @@ export function CalendarActivitiesView({ profile }: { profile: UserProfile }) {
                     </label>
                     <select
                       name="category"
-                      defaultValue={editingActivity?.category || 'Sambung Rutin'}
+                      defaultValue={editingActivity?.category || 'Pengajian Rutin'}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-medium"
                     >
                       {ACTIVITY_CATEGORIES.map(cat => (

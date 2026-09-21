@@ -4,12 +4,12 @@ import { CheckCircle2, AlertCircle, X, Info } from 'lucide-react';
 
 interface Toast {
   id: string;
-  type: 'success' | 'error' | 'info';
+  type: 'success' | 'error' | 'info' | 'warning';
   message: string;
 }
 
 interface ToastContextType {
-  showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
+  showToast: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
 const ToastContext = createContext<ToastContextType>({
@@ -19,7 +19,7 @@ const ToastContext = createContext<ToastContextType>({
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' | 'warning' = 'success') => {
     const id = Math.random().toString(36).substring(2, 9);
     setToasts((prev) => [...prev, { id, type, message }]);
 
@@ -49,6 +49,8 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                   ? 'bg-slate-900/95 text-white border-emerald-500/40 shadow-emerald-900/20'
                   : toast.type === 'error'
                   ? 'bg-slate-900/95 text-white border-rose-500/40 shadow-rose-900/20'
+                  : toast.type === 'warning'
+                  ? 'bg-slate-900/95 text-white border-amber-500/40 shadow-amber-900/20'
                   : 'bg-slate-900/95 text-white border-blue-500/40 shadow-blue-900/20'
               }`}
             >
@@ -59,16 +61,19 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       ? 'bg-emerald-500/20 text-emerald-400'
                       : toast.type === 'error'
                       ? 'bg-rose-500/20 text-rose-400'
+                      : toast.type === 'warning'
+                      ? 'bg-amber-500/20 text-amber-400'
                       : 'bg-blue-500/20 text-blue-400'
                   }`}
                 >
                   {toast.type === 'success' && <CheckCircle2 className="w-5 h-5" />}
                   {toast.type === 'error' && <AlertCircle className="w-5 h-5" />}
+                  {toast.type === 'warning' && <AlertCircle className="w-5 h-5" />}
                   {toast.type === 'info' && <Info className="w-5 h-5" />}
                 </div>
                 <div className="space-y-0.5">
                   <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    {toast.type === 'success' ? 'Sukses' : toast.type === 'error' ? 'Gagal' : 'Informasi'}
+                    {toast.type === 'success' ? 'Sukses' : toast.type === 'error' ? 'Gagal' : toast.type === 'warning' ? 'Peringatan' : 'Informasi'}
                   </p>
                   <p className="text-sm font-semibold leading-snug">{toast.message}</p>
                 </div>

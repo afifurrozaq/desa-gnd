@@ -6,6 +6,34 @@
 const GOOGLE_SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 const FALLBACK_API_KEY = 'AIzaSyCBRAeVjFpslb7v4ck_VEehjjWjBt49LUI';
 
+const isValidAppsScriptUrl = (url: string | null | undefined): boolean => {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  if (trimmed.includes('googleusercontent.com') || trimmed.includes('/echo?')) {
+    return false;
+  }
+  return /script\.google\.com\/macros\/s\/.*\/exec/i.test(trimmed) || /script\.google\.com\/macros\/d\/.*\/exec/i.test(trimmed);
+};
+
+export const getAppsScriptUrl = (): string | null => {
+  const raw = (
+    (import.meta as any).env?.VITE_APPS_SCRIPT_URL ||
+    localStorage.getItem('app_script_url') ||
+    null
+  );
+
+  if (!isValidAppsScriptUrl(raw)) {
+    if (raw) {
+      console.warn('[Sheets] Ignoring invalid Apps Script URL and falling back safely:', raw);
+    }
+    return null;
+  }
+
+  return raw.trim();
+};
+
 export interface SheetData {
   range: string;
   values: any[][];
@@ -13,14 +41,22 @@ export interface SheetData {
 
 const handleResponseError = async (response: Response, actionName: string) => {
   const errorObj = await response.json().catch(() => ({}));
-  const is401 = response.status === 401 || 
-                errorObj?.error?.code === 401 || 
-                errorObj?.error?.status === 'UNAUTHENTICATED' || 
-                (typeof errorObj?.error?.message === 'string' && errorObj.error.message.includes('UNAUTHENTICATED'));
+  const isAuthError = response.status === 401 || 
+                      response.status === 403 || 
+                      errorObj?.error?.code === 401 || 
+                      errorObj?.error?.code === 403 || 
+                      errorObj?.error?.status === 'UNAUTHENTICATED' || 
+                      errorObj?.error?.status === 'PERMISSION_DENIED' || 
+                      (typeof errorObj?.error?.message === 'string' && (
+                        errorObj.error.message.includes('UNAUTHENTICATED') || 
+                        errorObj.error.message.includes('PERMISSION_DENIED')
+                      ));
   
-  if (is401) {
-    console.warn(`[Sheets] 401 Unauthenticated on ${actionName}`);
-    throw new Error('Sesi login Google Sheets Anda telah berakhir atau belum terhubung (401).');
+  if (isAuthError) {
+    console.warn(`[Sheets] Auth error (${response.status}) on ${actionName}`);
+    localStorage.removeItem('app_access_token');
+    window.dispatchEvent(new Event('storage'));
+    throw new Error('Akses Google Sheets memerlukan autentikasi Google (403/401). Silakan masuk menggunakan Google.');
   }
 
   const msg = errorObj?.error?.message || JSON.stringify(errorObj);
@@ -56,6 +92,7 @@ export const createSpreadsheet = async (accessToken: string, title: string) => {
 };
 
 export const updateSheetValues = async (accessToken: string, spreadsheetId: string, range: string, values: any[][]) => {
+  clearSheetMemoryCache(range.split('!')[0]);
   const response = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}?valueInputOption=RAW`, {
     method: 'PUT',
     headers: {
@@ -78,7 +115,7 @@ export const updateSheetValues = async (accessToken: string, spreadsheetId: stri
 
 // In-memory cache to prevent duplicate fetch requests and provide instant 0ms tab switching
 const memoryCache = new Map<string, { data: SheetData; expiresAt: number }>();
-const CACHE_TTL_MS = 20000; // 20 seconds cache
+const CACHE_TTL_MS = 3000; // 3 seconds cache for fast fresh updates
 
 export const clearSheetMemoryCache = (collectionName?: string) => {
   if (!collectionName) {
@@ -93,7 +130,7 @@ export const clearSheetMemoryCache = (collectionName?: string) => {
 };
 
 /**
- * Fast GViz fetch for public spreadsheets (sub-150ms directly from Google CDN)
+ * Fast GViz fetch for public spreadsheets (sub-150ms directly from Google CDN with cache-busting)
  */
 const fetchViaGViz = async (spreadsheetId: string, sheetName: string): Promise<SheetData | null> => {
   const controller = new AbortController();
@@ -106,8 +143,8 @@ const fetchViaGViz = async (spreadsheetId: string, sheetName: string): Promise<S
   }, 4000);
 
   try {
-    const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
-    const gvizResponse = await fetch(gvizUrl, { signal: controller.signal });
+    const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&_cb=${Date.now()}`;
+    const gvizResponse = await fetch(gvizUrl, { signal: controller.signal, cache: 'no-store' });
 
     if (gvizResponse.ok) {
       const text = await gvizResponse.text();
@@ -159,7 +196,53 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
     return cached.data;
   }
 
-  // 2. Try with OAuth Access Token first if provided (fast direct authorized access to Google Sheets API)
+  const appsScriptUrl = getAppsScriptUrl();
+  if (appsScriptUrl) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      try {
+        controller.abort('Apps Script timeout');
+      } catch {
+        controller.abort();
+      }
+    }, 30000);
+
+    try {
+      const fetchUrl = `${appsScriptUrl}${appsScriptUrl.includes('?') ? '&' : '?'}collection=${encodeURIComponent(sheetName)}`;
+      const res = await fetch(fetchUrl, { signal: controller.signal });
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+
+      if (!res.ok) {
+        throw new Error(`Apps Script HTTP ${res.status}`);
+      }
+
+      if (!contentType.includes('application/json') && !contentType.includes('+json')) {
+        const text = await res.text();
+        console.warn('[Sheets] Apps Script returned non-JSON response:', text.slice(0, 250));
+        throw new Error('Apps Script did not return JSON');
+      }
+
+      const json = await res.json();
+      if (json && Array.isArray(json.values)) {
+        const result = { range, values: json.values };
+        memoryCache.set(cacheKey, { data: result, expiresAt: now + CACHE_TTL_MS });
+        return result;
+      }
+
+      throw new Error('Apps Script response missing values array');
+    } catch (err: any) {
+      const isAborted = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
+      console.warn('[Sheets] Apps Script URL is configured and active, so direct Google Sheets fallback is disabled:', err?.message || err);
+      if (!isAborted) {
+        return { range, values: [] };
+      }
+      return { range, values: [] };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // Apps Script URL is not configured, so the old token/public fallbacks remain as last resort only.
   if (accessToken) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
@@ -185,8 +268,8 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
       }
 
       if (response.status === 401 || response.status === 403) {
-        // Token is invalid/expired - clear it so subsequent calls don't waste time
         localStorage.removeItem('app_access_token');
+        window.dispatchEvent(new Event('storage'));
       }
     } catch (err: any) {
       if (err?.name !== 'AbortError' && !String(err?.message || '').includes('aborted')) {
@@ -197,49 +280,12 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
     }
   }
 
-  // 3. Fallback: Ultra-fast check via GViz (works instantly for public sheets)
   const gvizResult = await fetchViaGViz(spreadsheetId, sheetName);
   if (gvizResult && gvizResult.values && gvizResult.values.length > 0) {
     memoryCache.set(cacheKey, { data: gvizResult, expiresAt: now + CACHE_TTL_MS });
     return gvizResult;
   }
 
-  // 4. Try with Apps Script Web App URL (Token-Free read fallback)
-  const appsScriptUrl = (import.meta as any).env?.VITE_APPS_SCRIPT_URL || localStorage.getItem('app_script_url');
-  if (appsScriptUrl) {
-    const controller = new AbortController();
-    // Allow up to 10s for Google Apps Script execution cold start
-    const timeoutId = setTimeout(() => {
-      try {
-        controller.abort('Apps Script timeout');
-      } catch {
-        controller.abort();
-      }
-    }, 10000);
-
-    try {
-      const fetchUrl = `${appsScriptUrl}${appsScriptUrl.includes('?') ? '&' : '?'}collection=${encodeURIComponent(sheetName)}`;
-      const res = await fetch(fetchUrl, { signal: controller.signal });
-
-      if (res.ok) {
-        const json = await res.json();
-        if (json && Array.isArray(json.values)) {
-          const result = { range, values: json.values };
-          memoryCache.set(cacheKey, { data: result, expiresAt: now + CACHE_TTL_MS });
-          return result;
-        }
-      }
-    } catch (err: any) {
-      const isAborted = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
-      if (!isAborted) {
-        console.warn('[Sheets] Apps Script GET fetch error:', err);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  // 5. Try with API Key (works if sheet is shared as "Anyone with link can view")
   const apiKey = (import.meta as any).env?.VITE_GOOGLE_API_KEY || FALLBACK_API_KEY;
   if (apiKey) {
     const controller = new AbortController();
@@ -270,11 +316,11 @@ export const getSheetValues = async (accessToken: string | null | undefined, spr
     }
   }
 
-  // If all fail, return empty structure rather than throwing an unhandled rejection
   return { range, values: [] };
 };
 
 export const appendSheetValues = async (accessToken: string, spreadsheetId: string, range: string, values: any[][]) => {
+  clearSheetMemoryCache(range.split('!')[0]);
   const response = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
     method: 'POST',
     headers: {
@@ -296,6 +342,7 @@ export const appendSheetValues = async (accessToken: string, spreadsheetId: stri
 };
 
 export const clearSheetValues = async (accessToken: string, spreadsheetId: string, range: string) => {
+  clearSheetMemoryCache(range.split('!')[0]);
   const response = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}:clear`, {
     method: 'POST',
     headers: {

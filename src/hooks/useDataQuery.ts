@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { getSheetValues } from '../lib/sheets';
+import { getSheetValues, clearSheetMemoryCache } from '../lib/sheets';
 import { useFirebase } from '../components/FirebaseProvider';
 
 export interface QueryWhereConstraint {
@@ -41,10 +41,16 @@ function filterItemsByConstraints<T>(items: T[], constraints: QueryWhereConstrai
   });
 }
 
+export interface UseDataQueryOptions {
+  autoRefresh?: boolean;
+  pollIntervalMs?: number;
+}
+
 export function useDataQuery<T>(
   collectionName: string,
   constraints: QueryWhereConstraint[] = [],
-  overriddenSpreadsheetId?: string
+  overriddenSpreadsheetId?: string,
+  options: UseDataQueryOptions = { autoRefresh: true, pollIntervalMs: 0 }
 ) {
   const { accessToken, spreadsheetId: globalSpreadsheetId } = useFirebase();
   const envSpreadsheetId = (import.meta as any).env?.VITE_SPREADSHEET_ID || '';
@@ -52,7 +58,7 @@ export function useDataQuery<T>(
 
   const constraintsStr = useMemo(() => JSON.stringify(constraints || []), [constraints]);
 
-  // 1. Immediately read from local cache so data never flickers or disappears
+  // Read current local cache
   const getCachedItems = useCallback((): T[] => {
     try {
       const cached = localStorage.getItem(`cache_${collectionName}`);
@@ -82,48 +88,36 @@ export function useDataQuery<T>(
   const [sheetLoading, setSheetLoading] = useState<boolean>(false);
   const [sheetError, setSheetError] = useState<Error | null>(null);
 
-  useEffect(() => {
-    let isMounted = true;
+  const fetchFromSheets = useCallback(async (bypassCache = false) => {
+    if (bypassCache) {
+      clearSheetMemoryCache(collectionName);
+    }
 
-    const fetchFromSheets = async () => {
-      // Re-populate from local cache first in case cache changed
-      const cachedItems = getCachedItems();
-      if (cachedItems.length > 0 && isMounted) {
-        setSheetData(cachedItems);
-      }
+    const cachedItems = getCachedItems();
+    if (cachedItems.length > 0) {
+      setSheetData(cachedItems);
+    }
 
-      const activeSpreadsheetId = overriddenSpreadsheetId || globalSpreadsheetId || (import.meta as any).env?.VITE_SPREADSHEET_ID || localStorage.getItem('app_spreadsheet_id') || '';
-      const activeAccessToken = accessToken || localStorage.getItem('app_access_token') || null;
+    const activeSpreadsheetId = overriddenSpreadsheetId || globalSpreadsheetId || (import.meta as any).env?.VITE_SPREADSHEET_ID || localStorage.getItem('app_spreadsheet_id') || '';
+    const activeAccessToken = accessToken || localStorage.getItem('app_access_token') || null;
 
-      if (!activeSpreadsheetId) {
-        if (isMounted) {
-          setSheetLoading(false);
-        }
-        return;
-      }
+    if (!activeSpreadsheetId) {
+      setSheetLoading(false);
+      return;
+    }
+    
+    if (cachedItems.length === 0) {
+      setSheetLoading(true);
+    }
+
+    try {
+      const result = await getSheetValues(activeAccessToken, activeSpreadsheetId, `${collectionName}!A:ZZ`);
+      const rows = result.values as any[][];
       
-      // Only show full loading spinner if cache is completely empty to maintain 0ms instant UI feel
-      if (isMounted && cachedItems.length === 0) {
-        setSheetLoading(true);
-      }
-
-      try {
-        const result = await getSheetValues(activeAccessToken, activeSpreadsheetId, `${collectionName}!A:ZZ`);
-        const rows = result.values as any[][];
-        
-        if (!rows || rows.length === 0) {
-          // If sheet is empty or not yet seeded, keep cached items if any
-          if (isMounted) {
-            if (cachedItems.length === 0) {
-              setSheetData([]);
-            }
-            setSheetLoading(false);
-          }
-          return;
-        }
-
+      let items: T[] = [];
+      if (rows && rows.length > 0) {
         const headers = rows[0] || [];
-        const items = rows.slice(1).map(row => {
+        items = rows.slice(1).map(row => {
           const item: any = {};
           headers.forEach((header, index) => {
             let val = row[index];
@@ -159,58 +153,129 @@ export function useDataQuery<T>(
           });
           return item as T;
         });
+      }
 
-        // Update local persistent cache with fresh sheet items
-        try {
-          localStorage.setItem(`cache_${collectionName}`, JSON.stringify(items));
-        } catch (cacheErr) {}
+      // Smart merge: protect recent local additions/deletions against stale remote sheets responses
+      const now = Date.now();
+      let recentDeletes: Array<{ id: string; time: number }> = [];
+      try {
+        const rawDeletes = localStorage.getItem(`recent_deletes_${collectionName}`);
+        if (rawDeletes) recentDeletes = JSON.parse(rawDeletes);
+      } catch (e) {}
+      recentDeletes = recentDeletes.filter(d => now - d.time < 180000); // 3 min memory
+      const deletedIds = new Set(recentDeletes.map(d => String(d.id)));
 
-        const filteredItems = filterItemsByConstraints<T>(items, constraints);
+      // Filter out deleted items
+      items = items.filter((it: any) => !deletedIds.has(String(it.id || it.uid)));
 
-        if (isMounted) {
-          setSheetData(filteredItems);
-          setSheetError(null);
+      // Merge local items that exist in current cache but haven't appeared in remote items yet
+      const remoteMap = new Map<string, any>();
+      items.forEach((it: any) => {
+        const key = String(it.id || it.uid);
+        if (key) remoteMap.set(key, it);
+      });
+
+      const currentLocalCache: any[] = JSON.parse(localStorage.getItem(`cache_${collectionName}`) || '[]');
+      currentLocalCache.forEach(localItem => {
+        const key = String(localItem.id || localItem.uid);
+        const isRecentlyAddedLocally = localItem._localAddedAt && (now - Number(localItem._localAddedAt) < 120000);
+        if (key && !deletedIds.has(key) && !remoteMap.has(key) && isRecentlyAddedLocally) {
+          // Keep local item only if added locally very recently and pending remote write
+          items.push(localItem);
         }
-      } catch (err: any) {
-        if (isMounted) {
-          setSheetError(err);
-          // On network or auth error, fall back to local cache so data stays visible
-          const fallback = getCachedItems();
-          if (fallback.length > 0) {
-            setSheetData(fallback);
-          }
-        }
-      } finally {
-        if (isMounted) setSheetLoading(false);
+      });
+
+      // Update local persistent cache with merged items
+      try {
+        localStorage.setItem(`cache_${collectionName}`, JSON.stringify(items));
+      } catch (cacheErr) {}
+
+      const filteredItems = filterItemsByConstraints<T>(items, constraints);
+      setSheetData(filteredItems);
+      setSheetError(null);
+    } catch (err: any) {
+      setSheetError(err);
+      const fallback = getCachedItems();
+      if (fallback.length > 0) {
+        setSheetData(fallback);
+      }
+    } finally {
+      setSheetLoading(false);
+    }
+  }, [collectionName, constraintsStr, effectiveSpreadsheetId, accessToken, overriddenSpreadsheetId, globalSpreadsheetId, getCachedItems]);
+
+  const autoRefresh = options.autoRefresh !== false;
+  const pollIntervalMs = typeof options.pollIntervalMs === 'number' ? options.pollIntervalMs : 0;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const safeFetch = (bypass = false) => {
+      if (isMounted) {
+        fetchFromSheets(bypass);
       }
     };
 
-    fetchFromSheets();
+    safeFetch();
 
     const handleDataUpdated = (e: Event) => {
       const customEvt = e as CustomEvent;
       if (!customEvt.detail || !customEvt.detail.collectionName || customEvt.detail.collectionName === collectionName) {
-        fetchFromSheets();
+        safeFetch(true);
       }
     };
 
     const handleStorage = () => {
-      fetchFromSheets();
+      safeFetch(true);
     };
 
-    window.addEventListener('data_updated', handleDataUpdated);
-    window.addEventListener('token_refreshed', handleStorage);
-    window.addEventListener('spreadsheet_id_updated', handleStorage);
+    const handleFocus = () => {
+      safeFetch(true);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        safeFetch(true);
+      }
+    };
+
+    const shouldUseTimerPolling = autoRefresh && Number.isFinite(pollIntervalMs) && pollIntervalMs > 0;
+
+    const pollInterval = shouldUseTimerPolling ? setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        safeFetch(false);
+      }
+    }, pollIntervalMs) : null;
+
+    if (autoRefresh) {
+      window.addEventListener('data_updated', handleDataUpdated);
+      window.addEventListener('token_refreshed', handleStorage);
+      window.addEventListener('spreadsheet_id_updated', handleStorage);
+      window.addEventListener('focus', handleFocus);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
 
     return () => {
       isMounted = false;
-      window.removeEventListener('data_updated', handleDataUpdated);
-      window.removeEventListener('token_refreshed', handleStorage);
-      window.removeEventListener('spreadsheet_id_updated', handleStorage);
+      if (pollInterval) clearInterval(pollInterval);
+      if (autoRefresh) {
+        window.removeEventListener('data_updated', handleDataUpdated);
+        window.removeEventListener('token_refreshed', handleStorage);
+        window.removeEventListener('spreadsheet_id_updated', handleStorage);
+        window.removeEventListener('focus', handleFocus);
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
     };
-  }, [effectiveSpreadsheetId, accessToken, collectionName, constraintsStr]);
+  }, [fetchFromSheets, collectionName, autoRefresh, pollIntervalMs]);
 
   return useMemo(() => {
-    return { data: sheetData, loading: sheetLoading, error: sheetError };
-  }, [sheetData, sheetLoading, sheetError]);
+    return { 
+      data: sheetData, 
+      loading: sheetLoading, 
+      error: sheetError,
+      refetch: () => fetchFromSheets(true),
+      refresh: () => fetchFromSheets(true)
+    };
+  }, [sheetData, sheetLoading, sheetError, fetchFromSheets]);
 }
+

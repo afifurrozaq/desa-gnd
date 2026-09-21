@@ -85,6 +85,33 @@ import { createSpreadsheet, updateSheetValues, getSheetValues } from './lib/shee
 import { saveData, deleteData, clearSheetMemoryCache } from './lib/dataService';
 import { cn } from './lib/utils';
 import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping, RegistrationLink } from './types';
+import { 
+  MOSQUE_LOCATIONS, 
+  MOSQUE_LOCATION_OPTIONS,
+  DEFAULT_LOCATION, 
+  LOCATION_PREFIXES, 
+  DAPUKAN_OPTIONS, 
+  DAPUKAN_OPTIONS_OBJ,
+  JAMAAH_CATEGORY_OPTIONS,
+  DEFAULT_JAMAAH_CATEGORY,
+  MARITAL_STATUS_OPTIONS, 
+  SESSION_TYPE_OPTIONS, 
+  BLOOD_TYPE_OPTIONS, 
+  GENDER_OPTIONS, 
+  EDUCATION_OPTIONS,
+  YES_NO_OPTIONS,
+  ATTENDANCE_STATUS_OPTIONS,
+  ASSET_STATUS_OPTIONS,
+  ASSET_TYPE_OPTIONS,
+  USER_ROLE_OPTIONS,
+  getTodayJadwalSambung,
+  ACTIVITY_CATEGORIES,
+  MONTH_NAMES, 
+  APP_TITLE, 
+  APP_SUBTITLE, 
+  APP_CREDIT_STUDIO, 
+  APP_CREDIT_URL 
+} from './constants';
 
 // --- Firestore Error Handling ---
 enum OperationType {
@@ -200,7 +227,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const loc = params.get('location');
-      if (loc && ['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].includes(loc)) {
+      if (loc && MOSQUE_LOCATION_OPTIONS.some(option => option.value === loc)) {
         return loc as MosqueLocation;
       }
     }
@@ -261,6 +288,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
 
   const { data: jamaahList } = useDataQuery<Jamaah>('jamaah');
   const { data: attendanceList } = useDataQuery<Attendance>('attendance');
+  const { data: activitiesList } = useDataQuery<Activity>('activities');
 
   // Helper to check if a date string/timestamp corresponds to today
   const checkIsToday = (rawDate: any): boolean => {
@@ -290,39 +318,71 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
     return false;
   };
 
+  // Filter activities to only include those with category containing 'sambung'
+  const sambungActivities = useMemo(() => {
+    return (activitiesList || []).filter(act => {
+      const cat = (act.category || act.type || '').toLowerCase();
+      return cat.includes('sambung');
+    });
+  }, [activitiesList]);
+
+  // Today's Sambung activities from Calendar
+  const todaySambungActivities = useMemo(() => {
+    return sambungActivities.filter(act => checkIsToday(act.date));
+  }, [sambungActivities]);
+
+  const [selectedActivityId, setSelectedActivityId] = useState<string>('');
+
   // Find if a jamaah has already attended today
   const findExistingAttendanceToday = (jamaah: Jamaah | null) => {
     if (!jamaah) return null;
     const today = new Date();
     const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-    // 1. Check local session storage marker
-    const localKey1 = `attendance_done_${jamaah.id}_${todayKey}`;
-    const localKey2 = jamaah.memberId ? `attendance_done_${jamaah.memberId}_${todayKey}` : null;
-    const localMarker = localStorage.getItem(localKey1) || (localKey2 ? localStorage.getItem(localKey2) : null);
-    if (localMarker) {
+    const targetId = jamaah.id ? String(jamaah.id).trim() : null;
+    const targetName = jamaah.name ? jamaah.name.trim().toLowerCase() : null;
+
+    if (!targetId && !targetName) return null;
+
+    // 1. Check local session storage markers ONLY for THIS specific individual (id or name, NEVER shared memberId/KK ID)
+    const localKeyId = targetId ? `attendance_done_id_${targetId}_${todayKey}` : null;
+    const localKeyName = targetName ? `attendance_done_name_${encodeURIComponent(targetName)}_${todayKey}` : null;
+
+    const localMarkerStr = 
+      (localKeyId ? localStorage.getItem(localKeyId) : null) || 
+      (localKeyName ? localStorage.getItem(localKeyName) : null);
+
+    if (localMarkerStr) {
       try {
-        return JSON.parse(localMarker);
+        const parsed = JSON.parse(localMarkerStr);
+        const markerName = parsed?.jamaahName ? String(parsed.jamaahName).trim().toLowerCase() : '';
+        const markerId = parsed?.jamaahId ? String(parsed.jamaahId).trim() : '';
+        if (
+          (targetId && markerId && targetId === markerId) ||
+          (targetName && markerName && targetName === markerName) ||
+          (!parsed.jamaahName && !parsed.jamaahId)
+        ) {
+          return parsed;
+        }
       } catch {
-        return { 
-          jamaahName: jamaah.name, 
-          location: jamaah.location, 
-          date: Date.now(), 
-          sessionType: 'Kelompok', 
-          status: 'hadir',
-          time: 'Hari ini'
-        };
+        // ignore invalid JSON
       }
     }
 
+    // Helper to check if a record belongs to THIS specific individual
+    const isSamePersonRecord = (a: any) => {
+      if (!a) return false;
+      const recJamaahId = a.jamaahId ? String(a.jamaahId).trim() : null;
+      const recJamaahName = a.jamaahName ? String(a.jamaahName).trim().toLowerCase() : null;
+
+      const matchesId = Boolean(targetId) && Boolean(recJamaahId) && targetId === recJamaahId;
+      const matchesName = Boolean(targetName) && Boolean(recJamaahName) && targetName === recJamaahName;
+
+      return (matchesId || matchesName) && checkIsToday(a.date || a.timestamp);
+    };
+
     // 2. Check live attendance list
-    const matchInList = (attendanceList || []).find(a => {
-      const isSame = 
-        (a.jamaahId && (a.jamaahId === jamaah.id || a.jamaahId === jamaah.memberId)) ||
-        (a.memberId && (a.memberId === jamaah.id || a.memberId === jamaah.memberId)) ||
-        (a.jamaahName && jamaah.name && a.jamaahName.trim().toLowerCase() === jamaah.name.trim().toLowerCase());
-      return isSame && checkIsToday(a.date || (a as any).timestamp);
-    });
+    const matchInList = (attendanceList || []).find(isSamePersonRecord);
     if (matchInList) return matchInList;
 
     // 3. Check localStorage cache
@@ -330,13 +390,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
       const cachedStr = localStorage.getItem('cache_attendance');
       if (cachedStr) {
         const cachedArr: any[] = JSON.parse(cachedStr);
-        const matchInCache = cachedArr.find(a => {
-          const isSame = 
-            (a.jamaahId && (a.jamaahId === jamaah.id || a.jamaahId === jamaah.memberId)) ||
-            (a.memberId && (a.memberId === jamaah.id || a.memberId === jamaah.memberId)) ||
-            (a.jamaahName && jamaah.name && a.jamaahName.trim().toLowerCase() === jamaah.name.trim().toLowerCase());
-          return isSame && checkIsToday(a.date || a.timestamp);
-        });
+        const matchInCache = cachedArr.find(isSamePersonRecord);
         if (matchInCache) return matchInCache;
       }
     } catch {
@@ -369,6 +423,9 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
     if (existing) {
       setExistingAttendance(existing);
       setShowAlreadyAttended(true);
+    } else {
+      setExistingAttendance(null);
+      setShowAlreadyAttended(false);
     }
   };
 
@@ -480,13 +537,15 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
       const dayName = days[now.getDay()];
       const timeStr = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 
+      const selectedSambung = sambungActivities.find(a => a.id === selectedActivityId) || todaySambungActivities[0];
+
       const newRecord = {
         id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
         jamaahId: selectedJamaah.id,
         memberId: selectedJamaah.memberId || '',
         jamaahName: selectedJamaah.name,
         location: selectedJamaah.location || selectedLocation || 'Kramat Batu',
-        category: selectedJamaah.category || 'UMUM',
+        category: selectedJamaah.category || DEFAULT_JAMAAH_CATEGORY,
         date: now.getTime(),
         timestamp: now.toISOString(),
         time: timeStr,
@@ -494,13 +553,18 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
         day: dayName,
         status,
         reason: status === 'izin' ? reason : '',
+        activityId: selectedSambung?.id || '',
+        activityTitle: selectedSambung?.title || '',
+        activityCategory: 'Sambung',
         createdAt: now.toISOString()
       };
 
-      // Mark in local storage immediately so double submission is locked instant-fast
-      localStorage.setItem(`attendance_done_${selectedJamaah.id}_${todayKey}`, JSON.stringify(newRecord));
-      if (selectedJamaah.memberId) {
-        localStorage.setItem(`attendance_done_${selectedJamaah.memberId}_${todayKey}`, JSON.stringify(newRecord));
+      // Mark in local storage immediately so double submission is locked instant-fast for THIS specific jamaah
+      if (selectedJamaah.id) {
+        localStorage.setItem(`attendance_done_id_${selectedJamaah.id.trim()}_${todayKey}`, JSON.stringify(newRecord));
+      }
+      if (selectedJamaah.name) {
+        localStorage.setItem(`attendance_done_name_${encodeURIComponent(selectedJamaah.name.trim().toLowerCase())}_${todayKey}`, JSON.stringify(newRecord));
       }
 
       // Save data with timeout protection (max 4.5 seconds)
@@ -530,17 +594,10 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
   };
 
   const getDayStatus = () => {
-    const today = new Date().getDay(); // 0-6 (Sun-Sat)
-    const schedules = [
-      { day: 1, name: 'Senin', sessions: ['UMUM (Kelompok/Desa)', 'GPN'] },
-      { day: 2, name: 'Selasa', sessions: ['GPN'] },
-      { day: 3, name: 'Rabu', sessions: ['UMUM (Kelompok/Desa)', 'GPN'] },
-      { day: 4, name: 'Kamis', sessions: ['UMUM (Kelompok/Desa)', 'GPN'] },
-      { day: 6, name: 'Sabtu', sessions: ['Acara Kelompok/Desa'] },
-      { day: 0, name: 'Minggu', sessions: ['Acara Kelompok/Desa'] },
-    ];
-    const current = schedules.find(s => s.day === today);
-    return current ? current.sessions.join(', ') : 'Tidak ada jadwal rutin';
+    if (todaySambungActivities.length > 0) {
+      return todaySambungActivities.map(a => `${a.title}${a.time ? ` (${a.time})` : ''}`).join(' • ');
+    }
+    return getTodayJadwalSambung();
   };
 
   if (success && lastSubmittedData) {
@@ -566,6 +623,12 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               <span className="text-slate-500 font-semibold">Sesi Sambung:</span>
               <span className="text-slate-800 font-bold">{lastSubmittedData.sessionType}</span>
             </div>
+            {lastSubmittedData.activityTitle && (
+              <div className="flex justify-between items-center py-1 border-b border-slate-100">
+                <span className="text-slate-500 font-semibold">Acara Kalender:</span>
+                <span className="text-purple-700 font-bold truncate max-w-[180px]">{lastSubmittedData.activityTitle}</span>
+              </div>
+            )}
             <div className="flex justify-between items-center py-1 border-b border-slate-100">
               <span className="text-slate-500 font-semibold">Status:</span>
               <span className={cn(
@@ -592,6 +655,12 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               onClick={() => {
                 setSuccess(false);
                 setLastSubmittedData(null);
+                setSelectedJamaah(null);
+                setSearchTerm('');
+                setStatus('hadir');
+                setReason('');
+                setShowAlreadyAttended(false);
+                setExistingAttendance(null);
               }} 
               className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-200 active:scale-95 text-sm"
             >
@@ -685,13 +754,69 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
 
         <div className="mb-8 p-4 bg-amber-50 rounded-2xl border border-amber-100">
           <div className="flex items-start gap-3">
-            <Clock className="w-5 h-5 text-amber-500 mt-0.5" />
-            <div>
-              <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Jadwal Hari Ini</p>
+            <Clock className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" />
+            <div className="w-full">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest">Jadwal Hari Ini</p>
+                {todaySambungActivities.length > 0 && (
+                  <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-bold">
+                    {todaySambungActivities.length} Acara Sambung Terintegrasi
+                  </span>
+                )}
+              </div>
               <p className="text-sm font-bold text-slate-700 mt-0.5">{getDayStatus()}</p>
             </div>
           </div>
         </div>
+
+        {/* Integration with Calendar Activities (Category: Sambung) */}
+        {sambungActivities.length > 0 && (
+          <div className="mb-8 p-4 bg-purple-50/70 rounded-2xl border border-purple-100 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-purple-600" />
+                <span className="text-xs font-black text-purple-900 uppercase tracking-wider">
+                  Kegiatan Sambung (Kalender)
+                </span>
+              </div>
+              <span className="text-[10px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">
+                Kategori Sambung
+              </span>
+            </div>
+
+            <select
+              value={selectedActivityId}
+              onChange={(e) => setSelectedActivityId(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-purple-200 bg-white text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-purple-500 shadow-2xs cursor-pointer"
+            >
+              <option value="">-- Otomatis Sambung Hari Ini / Umum --</option>
+              {sambungActivities.map(act => {
+                const actDate = new Date(act.date);
+                const dateStr = `${actDate.getDate()} ${MONTH_NAMES[actDate.getMonth()]}`;
+                return (
+                  <option key={act.id} value={act.id}>
+                    {act.title} ({dateStr} {act.time ? `- ${act.time}` : ''})
+                  </option>
+                );
+              })}
+            </select>
+
+            {(() => {
+              const activeAct = sambungActivities.find(a => a.id === selectedActivityId) || todaySambungActivities[0];
+              if (!activeAct) return null;
+              return (
+                <div className="p-3 bg-white rounded-xl border border-purple-100 text-xs text-slate-600 space-y-1 shadow-2xs">
+                  <p className="font-bold text-purple-900">{activeAct.title}</p>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
+                    {activeAct.time && <span>🕒 {activeAct.time}</span>}
+                    {activeAct.location && <span>📍 {activeAct.location}</span>}
+                    {activeAct.speaker && <span>👤 Pemateri: {activeAct.speaker}</span>}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         <div className="space-y-8">
           <div className="relative">
@@ -708,8 +833,8 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                 className="w-full pl-12 pr-4 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all font-bold text-slate-700 bg-slate-50/50 appearance-none cursor-pointer"
               >
                 <option value="">-- Pilih Lokasi --</option>
-                {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                  <option key={l} value={l}>{l}</option>
+                {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                  <option key={value} value={value}>{label}</option>
                 ))}
               </select>
             </div>
@@ -726,7 +851,11 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                     value={searchTerm}
                     onChange={(e) => {
                       setSearchTerm(e.target.value);
-                      if (selectedJamaah) setSelectedJamaah(null);
+                      if (selectedJamaah) {
+                        setSelectedJamaah(null);
+                        setExistingAttendance(null);
+                        setShowAlreadyAttended(false);
+                      }
                     }}
                     placeholder="Cari nama Anda..."
                     className="w-full pl-12 pr-4 py-4 rounded-2xl border border-slate-200 outline-none focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 transition-all font-bold text-slate-700 bg-slate-50/50"
@@ -905,7 +1034,7 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
                     1. Lokasi Kelompok
                   </label>
                   <div className="grid grid-cols-3 gap-1.5">
-                    {['Pilih Kelompok', 'Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => (
+                    {[...MOSQUE_LOCATION_OPTIONS.map(option => option.value)].map(loc => (
                       <button
                         key={loc}
                         type="button"
@@ -1056,6 +1185,9 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
               <button 
                 onClick={() => {
                   setShowAlreadyAttended(false);
+                  setExistingAttendance(null);
+                  setSelectedJamaah(null);
+                  setSearchTerm('');
                 }} 
                 className="w-full py-3.5 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider hover:bg-slate-800 transition-all active:scale-95 shadow-xl shadow-slate-200 text-xs"
               >
@@ -1097,25 +1229,6 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
     </div>
   );
 }
-
-// --- Shared Constants ---
-const LOCATION_PREFIXES: Record<string, string> = {
-  'Kramat Batu': 'KB',
-  'Karya Utama': 'KU',
-  'Radio Dalam': 'RD',
-  'Cipete': 'CP',
-  'Antena': 'AN'
-};
-
-const DAPUKAN_OPTIONS = [
-  "Ides", "Wides", "Koor. Lupg", "Bosdes", "Mubdes", "Tim Aghniya'", "Ku Des", 
-  "Tim Bk", "Tim Bacaan", "Tim Basyiron Wa Nadziron", "Tim Benda Sb", "Tim DhuaFa'", 
-  "Tim Faraoid", "Tim Gambuh", "Tim Haji", "Tim Keluarga Bahagia", "Tim Kematian", 
-  "Tim Manula", "Tim Mondar Mandir", "Tim Muballigh", "Tim Organisasi", 
-  "Tim Pembangunan", "Tim Pkw", "Tim Penyelesaian", "Tim Pramuka", "Tim Sarjana", 
-  "Tim Ub", "Tim Zakat", "Tim Cai & Remaja (Karemdes)", "Keputrian Des", 
-  "Ikel", "Wikel", "Pjkbm", "Boskel", "Mubkel", "Ku Kel", "Pakar Pendidik", "Ptk", "Keputkel", "Rokyah"
-];
 
 // --- Public Jamaah Self-Registration View ---
 function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () => void, spreadsheetId?: string }) {
@@ -1325,7 +1438,7 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
       address: currentAddress || originAddress,
       phone: phoneVal,
       location: selectedLocation,
-      category: (formData.get('category') as JamaahCategory) || 'UMUM',
+      category: (formData.get('category') as JamaahCategory) || DEFAULT_JAMAAH_CATEGORY,
       isKK,
       kkId: finalKKId,
       familyOrder,
@@ -1667,18 +1780,18 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Jenis Kelamin</label>
                   <select name="gender" defaultValue="Laki-laki" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
-                    <option value="Laki-laki">Laki-laki</option>
-                    <option value="Perempuan">Perempuan</option>
+                    {GENDER_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Golongan Darah</label>
                   <select name="bloodType" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
                     <option value="">Pilih Golongan Darah...</option>
-                    <option value="A">A</option>
-                    <option value="B">B</option>
-                    <option value="AB">AB</option>
-                    <option value="O">O</option>
+                    {BLOOD_TYPE_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -1819,17 +1932,10 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
-                  <select name="category" defaultValue="UMUM" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
-                    <option value="UMUM">UMUM</option>
-                    <option value="GPN_A">GPN A</option>
-                    <option value="GPN_B">GPN B</option>
-                    <option value="GPN_B_PLUS">GPN B+</option>
-                    <option value="AR">AR</option>
-                    <option value="APR">APR</option>
-                    <option value="ACR">ACR</option>
-                    <option value="AUD">AUD</option>
-                    <option value="DUDA">DUDA</option>
-                    <option value="JANDA">JANDA</option>
+                  <select name="category" defaultValue={DEFAULT_JAMAAH_CATEGORY} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
+                    {JAMAAH_CATEGORY_OPTIONS.map(({ value, label }) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -1849,8 +1955,8 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                       isLocationLocked && "bg-slate-100 cursor-not-allowed opacity-80"
                     )}
                   >
-                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                      <option key={l} value={l}>{l}</option>
+                    {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                      <option key={value} value={value}>{label}</option>
                     ))}
                   </select>
                 </div>
@@ -1897,10 +2003,9 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
                   <select name="maritalStatus" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
                     <option value="">Pilih Status...</option>
-                    <option value="Belum Menikah">Belum Menikah</option>
-                    <option value="Nikah">Nikah</option>
-                    <option value="Janda">Janda</option>
-                    <option value="Duda">Duda</option>
+                    {MARITAL_STATUS_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -1933,15 +2038,9 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
                   <label className="block text-xs font-bold text-slate-700 mb-1">Pendidikan Terakhir</label>
                   <select name="lastEducation" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none text-sm bg-white font-medium">
                     <option value="">Pilih Pendidikan...</option>
-                    <option value="SD">SD</option>
-                    <option value="SMP">SMP</option>
-                    <option value="SMA">SMA</option>
-                    <option value="D1">D1</option>
-                    <option value="D2">D2</option>
-                    <option value="D3">D3</option>
-                    <option value="S1">S1</option>
-                    <option value="S2">S2</option>
-                    <option value="S3">S3</option>
+                    {EDUCATION_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
@@ -2180,8 +2279,8 @@ function RegistrationLinkModal({
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<'create' | 'history'>('create');
   
-  const [targetLocation, setTargetLocation] = useState<MosqueLocation | 'Seluruh Lokasi'>(() => {
-    return profile.location || 'Pilih Kelompok';
+  const [targetLocation, setTargetLocation] = useState<MosqueLocation | 'Seluruh Lokasi' | ''>(() => {
+    return profile.location || '';
   });
 
   const [durationOption, setDurationOption] = useState<'6h' | '12h' | '24h' | '3d' | '7d' | '14d' | '30d' | 'custom'>('24h');
@@ -2226,9 +2325,10 @@ function RegistrationLinkModal({
   const handleGenerate = () => {
     const expiresAt = calculateExpiresAt();
     const id = `reg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const finalLocation: MosqueLocation | 'Seluruh Lokasi' = targetLocation || 'Seluruh Lokasi';
     const payload = {
       id,
-      location: targetLocation,
+      location: finalLocation,
       expiresAt,
       createdAt: Date.now(),
       createdBy: profile.displayName || profile.role,
@@ -2246,7 +2346,7 @@ function RegistrationLinkModal({
     const newRecord: RegistrationLink = {
       id,
       token,
-      location: targetLocation,
+      location: finalLocation,
       expiresAt,
       createdAt: Date.now(),
       createdBy: profile.displayName || profile.role,
@@ -2491,8 +2591,8 @@ function RegistrationLinkModal({
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
                     >
                       {profile.role === 'admin' && <option value="Seluruh Lokasi">Seluruh Lokasi (Jamaah Bebas Memilih)</option>}
-                      {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => (
-                        <option key={loc} value={loc}>{loc}</option>
+                      {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>{label}</option>
                       ))}
                     </select>
                   </div>
@@ -2830,15 +2930,24 @@ function LoginView({ onAttendanceMode, onRegisterJamaahMode }: { onAttendanceMod
         await signInWithEmailAndPassword(auth, email.trim(), password);
       }
     } catch (err: any) {
-      const msg = err.message || 'Gagal masuk';
-      if (msg.includes('email-already-in-use')) {
+      console.warn('[Login Error]', err);
+      const code = err?.code || '';
+      const msg = err?.message || String(err || 'Gagal masuk');
+      
+      if (code === 'auth/operation-not-allowed' || msg.includes('operation-not-allowed') || msg.includes('OPERATION_NOT_ALLOWED') || msg.includes('403')) {
+        setError('Metode masuk Email & Password belum diaktifkan di Firebase Console, atau dibatasi (403). Silakan klik tombol "Masuk dengan Google" di atas.');
+      } else if (code === 'auth/email-already-in-use' || msg.includes('email-already-in-use')) {
         setError('Email ini sudah terdaftar. Silakan masuk atau gunakan email lain.');
-      } else if (msg.includes('weak-password')) {
+      } else if (code === 'auth/weak-password' || msg.includes('weak-password')) {
         setError('Password terlalu pendek (minimal 6 karakter).');
-      } else if (msg.includes('invalid-credential') || msg.includes('user-not-found') || msg.includes('wrong-password')) {
+      } else if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential' || msg.includes('invalid-credential') || msg.includes('user-not-found') || msg.includes('wrong-password')) {
         setError('Email atau password tidak sesuai.');
+      } else if (code === 'auth/user-disabled' || msg.includes('user-disabled')) {
+        setError('Akun ini telah dinonaktifkan oleh administrator.');
+      } else if (code === 'auth/too-many-requests' || msg.includes('too-many-requests')) {
+        setError('Terlalu banyak percobaan masuk yang gagal. Silakan coba lagi nanti.');
       } else {
-        setError(msg);
+        setError(`Gagal masuk: ${msg}`);
       }
     } finally {
       setLoading(false);
@@ -2909,11 +3018,9 @@ function LoginView({ onAttendanceMode, onRegisterJamaahMode }: { onAttendanceMod
                       onChange={(e) => setLocation(e.target.value as MosqueLocation)}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
                     >
-                      <option value="Kramat Batu">Kramat Batu</option>
-                      <option value="Karya Utama">Karya Utama</option>
-                      <option value="Radio Dalam">Radio Dalam</option>
-                      <option value="Cipete">Cipete</option>
-                      <option value="Antena">Antena</option>
+                      {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
                     </select>
                   </div>
                 )}
@@ -3085,6 +3192,49 @@ function ActivityImageSlider({ images }: { images?: any }) {
   );
 }
 
+function CustomChartTooltip({ active, payload, label, unit = '', valueSuffix = '', titlePrefix = '' }: any) {
+  if (!active || !payload || !payload.length) return null;
+
+  const data = payload[0];
+  const color = data.color || data.fill || '#10b981';
+  const name = label || data.name || data.payload?.name || 'Data';
+  const rawVal = data.value ?? data.payload?.value ?? data.payload?.count ?? data.payload?.total ?? 0;
+  
+  let formattedVal = typeof rawVal === 'number' ? rawVal.toLocaleString('id-ID') : rawVal;
+  if (valueSuffix) formattedVal += ` ${valueSuffix}`;
+  if (unit) formattedVal += ` ${unit}`;
+
+  const total = data.payload?.totalSum;
+  const percent = total && total > 0 ? ((rawVal / total) * 100).toFixed(1) : (data.payload?.percent ? (data.payload.percent * 100).toFixed(1) : null);
+
+  return (
+    <div className="bg-slate-900/95 text-white p-3.5 rounded-2xl shadow-2xl border border-slate-800 text-xs backdrop-blur-md min-w-[160px] space-y-1.5 animate-in fade-in zoom-in-95 duration-150 z-50">
+      <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: color }} />
+        <span className="font-extrabold text-slate-100 truncate">
+          {titlePrefix ? `${titlePrefix}: ${name}` : name}
+        </span>
+      </div>
+      <div className="space-y-1 pt-0.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-slate-400 font-medium">Nilai Presisi:</span>
+          <span className="font-black text-sm text-emerald-400 tracking-tight">
+            {formattedVal}
+          </span>
+        </div>
+        {percent !== null && (
+          <div className="flex items-center justify-between gap-3 text-[11px]">
+            <span className="text-slate-400">Proporsi:</span>
+            <span className="font-bold text-slate-300 bg-slate-800/80 px-2 py-0.5 rounded-md border border-slate-700/50">
+              {percent}%
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Overview({ profile }: { profile: UserProfile }) {
   const { db } = useFirebase();
   const filter = useMemo(() => (profile.role === 'pengurus' && profile.location && (profile.location as string) !== 'Seluruh Lokasi') ? [where('location', '==', profile.location)] : [], [profile.role, profile.location]);
@@ -3093,25 +3243,94 @@ function Overview({ profile }: { profile: UserProfile }) {
   const { data: activities } = useDataQuery<Activity>('activities', filter);
   const { data: stats } = useDataQuery<FacilityStat>('facility_stats', []);
 
+  // Filter activities to only include those with images for Dashboard display
+  const activitiesWithImages = useMemo(() => {
+    return activities.filter(act => {
+      const imgs = parseImageUrls(act.imageUrls);
+      return imgs && imgs.length > 0;
+    });
+  }, [activities]);
+
   const barangAssets = useMemo(() => allAssets.filter(a => !a.assetType || a.assetType === 'barang'), [allAssets]);
   const tanahAssets = useMemo(() => allAssets.filter(a => a.assetType === 'tanah'), [allAssets]);
   const totalTanahArea = useMemo(() => tanahAssets.reduce((sum, t) => sum + (t.areaSize || 0), 0), [tanahAssets]);
   const totalKK = useMemo(() => jamaah.filter(j => j.isKK).length, [jamaah]);
 
   const jamaahCategories = useMemo(() => {
-    const counts: Record<string, number> = { 'UMUM': 0, 'GPN': 0, 'APR': 0, 'ACR': 0, 'DUDA': 0, 'JANDA': 0 };
+    const categoryValues = JAMAAH_CATEGORY_OPTIONS.map(option => option.value.toUpperCase());
+    const counts: Record<string, number> = Object.fromEntries(categoryValues.map(name => [name, 0]));
+
     jamaah.forEach(j => {
-      const cat = (j.category || 'UMUM').toUpperCase();
+      const cat = String(j.category || DEFAULT_JAMAAH_CATEGORY).toUpperCase();
       if (counts[cat] !== undefined) {
         counts[cat]++;
       } else {
         counts[cat] = (counts[cat] || 0) + 1;
       }
     });
+
     return Object.entries(counts)
-      .filter(([_, value]) => value > 0 || ['UMUM', 'GPN', 'APR', 'ACR'].includes(_))
+      .filter(([_, value]) => value > 0)
       .map(([name, value]) => ({ name, value }));
   }, [jamaah]);
+
+  const jamaahGrowthData = useMemo(() => {
+    if (!jamaah || jamaah.length === 0) return [];
+    const sorted = [...jamaah].sort((a, b) => (a.registeredAt || 0) - (b.registeredAt || 0));
+    
+    let cumulative = 0;
+    const dateMap = new Map<string, number>();
+    
+    sorted.forEach(j => {
+      const d = new Date(j.registeredAt || Date.now());
+      const dateStr = d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+      cumulative += 1;
+      dateMap.set(dateStr, cumulative);
+    });
+
+    return Array.from(dateMap.entries()).map(([date, total]) => ({
+      date,
+      total
+    }));
+  }, [jamaah]);
+
+  const barangInventoryData = useMemo(() => {
+    const total = barangAssets.length || 1;
+    return [
+      { name: 'Baik', count: barangAssets.filter(a => a.status === 'baik').length, totalSum: total },
+      { name: 'Rusak', count: barangAssets.filter(a => a.status === 'rusak').length, totalSum: total },
+      { name: 'Perbaikan', count: barangAssets.filter(a => a.status === 'perlu perbaikan').length, totalSum: total }
+    ];
+  }, [barangAssets]);
+
+  const tanahDistData = useMemo(() => {
+    if (profile.role === 'admin') {
+      const locations = MOSQUE_LOCATION_OPTIONS.map(option => option.value);
+      const totalArea = tanahAssets.reduce((sum, t) => sum + (t.areaSize || 0), 0) || 1;
+      return locations.map(loc => ({
+        name: loc,
+        value: tanahAssets.filter(t => t.location === loc).reduce((sum, t) => sum + (t.areaSize || 0), 0),
+        unit: 'm²',
+        totalSum: totalArea
+      }));
+    } else {
+      const totalLands = tanahAssets.length || 1;
+      return [
+        { name: 'Wakaf', value: tanahAssets.filter(t => t.status === 'wakaf').length, unit: 'Bidang', totalSum: totalLands },
+        { name: 'Sertifikasi', value: tanahAssets.filter(t => t.status === 'sertifikasi').length, unit: 'Bidang', totalSum: totalLands },
+        { name: 'Terjual', value: tanahAssets.filter(t => t.status === 'terjual').length, unit: 'Bidang', totalSum: totalLands }
+      ];
+    }
+  }, [tanahAssets, profile.role]);
+
+  const jamaahCatPieData = useMemo(() => {
+    const total = jamaahCategories.reduce((sum, c) => sum + c.value, 0) || 1;
+    return jamaahCategories.map(c => ({
+      ...c,
+      totalSum: total,
+      unit: 'Orang'
+    }));
+  }, [jamaahCategories]);
 
   const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
@@ -3134,90 +3353,130 @@ function Overview({ profile }: { profile: UserProfile }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900 mb-6">Pertumbuhan Jamaah</h3>
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold text-slate-900">Pertumbuhan Jamaah</h3>
+            <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+              {jamaah.length} Terdaftar
+            </span>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={jamaah.sort((a,b) => a.registeredAt - b.registeredAt).map(j => ({ date: new Date(j.registeredAt).toLocaleDateString(), count: 1 }))}>
+              <LineChart data={jamaahGrowthData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="date" hide />
-                <YAxis hide />
-                <Tooltip />
-                <Line type="monotone" dataKey="count" stroke="#10b981" strokeWidth={3} dot={false} />
+                <XAxis dataKey="date" fontSize={11} stroke="#94a3b8" tickLine={false} />
+                <YAxis fontSize={11} stroke="#94a3b8" tickLine={false} />
+                <Tooltip 
+                  content={<CustomChartTooltip unit="Orang" titlePrefix="Tanggal" />} 
+                  cursor={{ stroke: '#10b981', strokeWidth: 1.5, strokeDasharray: '4 4' }} 
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="total" 
+                  name="Total Jamaah" 
+                  stroke="#10b981" 
+                  strokeWidth={3} 
+                  dot={{ r: 3.5, fill: '#10b981', strokeWidth: 2, stroke: '#ffffff' }}
+                  activeDot={{ r: 7, fill: '#059669', strokeWidth: 2, stroke: '#ffffff' }} 
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900 mb-6">Status Inventaris</h3>
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold text-slate-900">Status Inventaris</h3>
+            <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">
+              {barangAssets.length} Total Aset
+            </span>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={[
-                { name: 'Baik', count: barangAssets.filter(a => a.status === 'baik').length },
-                { name: 'Rusak', count: barangAssets.filter(a => a.status === 'rusak').length },
-                { name: 'Perbaikan', count: barangAssets.filter(a => a.status === 'perlu perbaikan').length }
-              ]}>
+              <BarChart data={barangInventoryData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="name" fontSize={12} />
-                <YAxis fontSize={12} />
-                <Tooltip />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                  { [0,1,2].map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index + 1]} />) }
+                <XAxis dataKey="name" fontSize={12} stroke="#64748b" tickLine={false} />
+                <YAxis fontSize={12} stroke="#64748b" tickLine={false} />
+                <Tooltip 
+                  content={<CustomChartTooltip unit="Unit" titlePrefix="Kondisi" />} 
+                  cursor={{ fill: 'rgba(241, 245, 249, 0.7)', rx: 8 }} 
+                />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                  { barangInventoryData.map((entry, index) => (
+                    <Cell 
+                      key={`cell-${index}`} 
+                      fill={COLORS[(index + 1) % COLORS.length]} 
+                      className="transition-all duration-200 hover:opacity-80 hover:brightness-110 cursor-pointer"
+                    />
+                  )) }
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900 mb-6">Distribusi Tanah Sabilillah</h3>
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold text-slate-900">Distribusi Tanah Sabilillah</h3>
+            <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-2.5 py-1 rounded-full">
+              {totalTanahArea.toLocaleString('id-ID')} m²
+            </span>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={
-                profile.role === 'admin' 
-                ? ['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(loc => ({
-                    name: loc,
-                    value: tanahAssets.filter(t => t.location === loc).reduce((sum, t) => sum + (t.areaSize || 0), 0)
-                  }))
-                : [
-                  { name: 'Wakaf', value: tanahAssets.filter(t => t.status === 'wakaf').length },
-                  { name: 'Sertifikasi', value: tanahAssets.filter(t => t.status === 'sertifikasi').length },
-                  { name: 'Terjual', value: tanahAssets.filter(t => t.status === 'terjual').length }
-                ]
-              }>
+              <BarChart data={tanahDistData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis dataKey="name" fontSize={10} />
-                <YAxis fontSize={12} />
-                <Tooltip />
-                <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                  { [0,1,2,3,4].map((entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />) }
+                <XAxis dataKey="name" fontSize={11} stroke="#64748b" tickLine={false} />
+                <YAxis fontSize={11} stroke="#64748b" tickLine={false} />
+                <Tooltip 
+                  content={<CustomChartTooltip titlePrefix="Kategori/Lokasi" />} 
+                  cursor={{ fill: 'rgba(241, 245, 249, 0.7)', rx: 8 }} 
+                />
+                <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                  { tanahDistData.map((entry, index) => (
+                    <Cell 
+                      key={`cell-${index}`} 
+                      fill={COLORS[index % COLORS.length]} 
+                      className="transition-all duration-200 hover:opacity-80 hover:brightness-110 cursor-pointer"
+                    />
+                  )) }
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900 mb-6">Kategori Jamaah</h3>
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-bold text-slate-900">Kategori Jamaah</h3>
+            <span className="text-xs font-semibold text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full">
+              {jamaahCategories.length} Kelompok
+            </span>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={jamaahCategories}
+                  data={jamaahCatPieData}
                   cx="50%"
                   cy="50%"
-                  innerRadius={60}
+                  innerRadius={55}
                   outerRadius={80}
                   paddingAngle={5}
                   dataKey="value"
+                  stroke="#ffffff"
+                  strokeWidth={2}
                 >
-                  {jamaahCategories.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  {jamaahCatPieData.map((entry, index) => (
+                    <Cell 
+                      key={`cell-${index}`} 
+                      fill={COLORS[index % COLORS.length]} 
+                      className="transition-all duration-200 hover:opacity-80 cursor-pointer origin-center"
+                    />
                   ))}
                 </Pie>
-                <Tooltip />
-                <Legend />
+                <Tooltip content={<CustomChartTooltip titlePrefix="Kategori" unit="Orang" />} />
+                <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -3233,7 +3492,7 @@ function Overview({ profile }: { profile: UserProfile }) {
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {activities.sort((a,b) => b.date - a.date).slice(0, 3).map((activity, actIdx) => (
+          {activitiesWithImages.sort((a,b) => b.date - a.date).slice(0, 3).map((activity, actIdx) => (
             <motion.div 
               key={activity.id ? `${activity.id}-${actIdx}` : `overview-act-${actIdx}`}
               whileHover={{ y: -4 }}
@@ -3265,10 +3524,10 @@ function Overview({ profile }: { profile: UserProfile }) {
               </div>
             </motion.div>
           ))}
-          {activities.length === 0 && (
+          {activitiesWithImages.length === 0 && (
             <div className="col-span-full py-20 text-center bg-slate-50 rounded-[2rem] border-2 border-dashed border-slate-200">
                <Calendar className="w-12 h-12 text-slate-200 mx-auto mb-4" />
-               <p className="text-slate-400 font-medium">Belum ada kegiatan yang diposting</p>
+               <p className="text-slate-400 font-medium">Belum ada kegiatan dengan foto yang diposting</p>
             </div>
           )}
         </div>
@@ -3423,7 +3682,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       address: currentAddress || originAddress,
       phone: (formData.get('phone') as string) || '',
       location,
-      category: (formData.get('category') as JamaahCategory) || 'UMUM',
+      category: (formData.get('category') as JamaahCategory) || DEFAULT_JAMAAH_CATEGORY,
       isKK,
       kkId: finalKKId,
       familyOrder,
@@ -3613,9 +3872,9 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                     <td className="px-6 py-4">
                       <span className={cn(
                         "px-2 py-0.5 rounded text-[10px] font-bold uppercase",
-                        j.category === 'UMUM' ? "bg-slate-100 text-slate-600" :
-                        j.category === 'ACR' ? "bg-emerald-100 text-emerald-700" :
-                        j.category === 'APR' ? "bg-blue-100 text-blue-700" :
+                        (j.category || DEFAULT_JAMAAH_CATEGORY) === 'UMUM' ? "bg-slate-100 text-slate-600" :
+                        (j.category || DEFAULT_JAMAAH_CATEGORY) === 'ACR' ? "bg-emerald-100 text-emerald-700" :
+                        (j.category || DEFAULT_JAMAAH_CATEGORY) === 'APR' ? "bg-blue-100 text-blue-700" :
                         "bg-purple-100 text-purple-700"
                       )}>
                         {j.category}
@@ -3956,18 +4215,18 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <label className="block text-xs font-bold text-slate-700 mb-1">Jenis Kelamin</label>
                       <select name="gender" defaultValue={editingJamaah?.gender || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white">
                         <option value="">Pilih Jenis Kelamin...</option>
-                        <option value="Laki-laki">Laki-laki</option>
-                        <option value="Perempuan">Perempuan</option>
+                        {GENDER_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">Golongan Darah</label>
                       <select name="bloodType" defaultValue={editingJamaah?.bloodType || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm bg-white">
                         <option value="">Pilih Golongan Darah...</option>
-                        <option value="A">A</option>
-                        <option value="B">B</option>
-                        <option value="AB">AB</option>
-                        <option value="O">O</option>
+                        {BLOOD_TYPE_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
                       </select>
                     </div>
                     <div>
@@ -4116,23 +4375,17 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">Kategori Jamaah</label>
-                      <select name="category" defaultValue={editingJamaah?.category || 'UMUM'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
-                        <option value="UMUM">UMUM</option>
-                        <option value="GPN_A">GPN A</option>
-                        <option value="GPN_B">GPN B</option>
-                        <option value="GPN_B_PLUS">GPN B+</option>
-                        <option value="APR">APR</option>
-                        <option value="ACR">ACR</option>
-                        <option value="AUD">AUD</option>
-                        <option value="DUDA">DUDA</option>
-                        <option value="JANDA">JANDA</option>
+                      <select name="category" defaultValue={editingJamaah?.category || DEFAULT_JAMAAH_CATEGORY} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
+                        {JAMAAH_CATEGORY_OPTIONS.map(({ value, label }) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
                       </select>
                     </div>
                     {profile.role === 'admin' && (
                       <div>
                         <label className="block text-xs font-bold text-slate-700 mb-1">Lokasi Kelompok</label>
                         <select name="location" defaultValue={editingJamaah?.location || 'Pilih Kelompok'} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
-                          {['Pilih Kelompok', 'Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
+                          {[...MOSQUE_LOCATION_OPTIONS.map(option => option.value)].map(l => (
                             <option key={l} value={l}>{l}</option>
                           ))}
                         </select>
@@ -4180,10 +4433,9 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <label className="block text-xs font-bold text-slate-700 mb-1">Status Pernikahan</label>
                       <select name="maritalStatus" defaultValue={editingJamaah?.maritalStatus || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
                         <option value="">Pilih Status...</option>
-                        <option value="Muda Mudi">Muda Mudi</option>
-                        <option value="Nikah">Nikah</option>
-                        <option value="Janda">Janda</option>
-                        <option value="Duda">Duda</option>
+                        {MARITAL_STATUS_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
                       </select>
                     </div>
                     <div>
@@ -4214,15 +4466,9 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                       <label className="block text-xs font-bold text-slate-700 mb-1">Pendidikan Terakhir</label>
                       <select name="lastEducation" defaultValue={editingJamaah?.lastEducation || ''} className="w-full px-4 py-2.5 rounded-xl border outline-none text-sm">
                         <option value="">Pilih Pendidikan...</option>
-                        <option value="SD">SD</option>
-                        <option value="SMP">SMP</option>
-                        <option value="SMA">SMA</option>
-                        <option value="D1">D1</option>
-                        <option value="D2">D2</option>
-                        <option value="D3">D3</option>
-                        <option value="S1">S1</option>
-                        <option value="S2">S2</option>
-                        <option value="S3">S3</option>
+                        {EDUCATION_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
                       </select>
                     </div>
                     <div>
@@ -4749,8 +4995,8 @@ function InventarisView({ profile, formTrigger, onFormTriggered, assetType = 'ba
                   <div>
                     <label className="block text-sm font-medium mb-1">Lokasi</label>
                     <select name="location" defaultValue={editingAsset?.location || profile.location} className="w-full px-4 py-2 rounded-xl border outline-none">
-                      {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                        <option key={l} value={l}>{l}</option>
+                      {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>{label}</option>
                       ))}
                     </select>
                   </div>
@@ -5668,7 +5914,7 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
                 className="bg-transparent text-[10px] font-black uppercase tracking-widest outline-none border-none cursor-pointer text-slate-700"
               >
                 <option value="all">Semua Lokasi</option>
-                {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => <option key={l} value={l}>{l}</option>)}
+                {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
               </select>
             </div>
           )}
@@ -6564,8 +6810,8 @@ function UsersView({ profile }: { profile?: any }) {
                   <label className="block text-sm font-semibold text-slate-700 mb-1">Lokasi Tugas (Khusus Pengurus)</label>
                   <select name="location" defaultValue="" className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
                     <option value="">Semua Lokasi / Tidak Terbatas</option>
-                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                      <option key={l} value={l}>{l}</option>
+                    {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                      <option key={value} value={value}>{label}</option>
                     ))}
                   </select>
                 </div>
@@ -6621,8 +6867,8 @@ function UsersView({ profile }: { profile?: any }) {
                   <label className="block text-sm font-semibold text-slate-700 mb-1">Lokasi Tugas (Khusus Pengurus)</label>
                   <select name="location" defaultValue={editingUser.location || ''} className="w-full px-4 py-2.5 rounded-xl border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500 text-sm bg-white">
                     <option value="">Semua Lokasi / Tidak Terbatas</option>
-                    {['Kramat Batu', 'Karya Utama', 'Radio Dalam', 'Cipete', 'Antena'].map(l => (
-                      <option key={l} value={l}>{l}</option>
+                    {MOSQUE_LOCATION_OPTIONS.map(({ value, label }) => (
+                      <option key={value} value={value}>{label}</option>
                     ))}
                   </select>
                 </div>

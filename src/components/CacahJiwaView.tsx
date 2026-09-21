@@ -24,14 +24,7 @@ import * as XLSX from 'xlsx';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile, MosqueLocation, Jamaah } from '../types';
 import { useDataQuery, where } from '../hooks/useDataQuery';
-
-const ALL_KELOMPOK: MosqueLocation[] = [
-  'Kramat Batu',
-  'Cipete',
-  'Karya Utama',
-  'Radio Dalam',
-  'Antena'
-];
+import { MOSQUE_LOCATIONS as ALL_KELOMPOK } from '../constants';
 
 interface CacahJiwaRowData {
   no: number;
@@ -137,8 +130,8 @@ export function CacahJiwaView({ profile }: { profile: UserProfile }) {
     return `${day} ${month} ${year}`;
   }, [cutoffDate]);
 
-  // Helper to calculate exact age at cutoff date
-  const calculateAgeAtCutoff = (dobStr?: string, defaultAge = 25): number => {
+
+   const calculateAgeAtCutoff = (dobStr?: string, defaultAge = 25): number => {
     if (!dobStr) return defaultAge;
     const dob = new Date(dobStr);
     if (isNaN(dob.getTime())) return defaultAge;
@@ -149,6 +142,22 @@ export function CacahJiwaView({ profile }: { profile: UserProfile }) {
       age--;
     }
     return Math.max(0, age);
+  };
+
+  const normalizeCategoryValue = (value?: string) => {
+    return String(value ?? '').trim().toLowerCase().replace(/\s+/g, '_');
+  };
+
+  const getCategoryGroup = (value?: string): 'ACR' | 'APR' | 'AR' | 'GPN' | 'UMUM' | 'OTHER' => {
+    const normalized = normalizeCategoryValue(value);
+
+    if (!normalized) return 'OTHER';
+    if (normalized === 'acr' || normalized.startsWith('acr')) return 'ACR';
+    if (normalized === 'apr' || normalized.startsWith('apr')) return 'APR';
+    if (normalized === 'ar' || normalized.startsWith('ar')) return 'AR';
+    if (normalized === 'gpn' || normalized.startsWith('gpn')) return 'GPN';
+    if (normalized.includes('umum')) return 'UMUM';
+    return 'OTHER';
   };
 
   // Helper to categorize individual Jamaah
@@ -245,9 +254,10 @@ export function CacahJiwaView({ profile }: { profile: UserProfile }) {
 
     // Default fallback age based on legacy category if dateOfBirth is missing
     let defaultAge = 25;
-    if (categoryStr === 'acr' || j.category === 'ACR') defaultAge = 8;
-    else if (categoryStr === 'apr' || j.category === 'APR') defaultAge = 14;
-    else if (categoryStr === 'gpn' || j.category === 'GPN') defaultAge = 20;
+    const categoryGroup = getCategoryGroup(j.category);
+    if (categoryGroup === 'ACR') defaultAge = 8;
+    else if (categoryGroup === 'APR') defaultAge = 14;
+    else if (categoryGroup === 'GPN') defaultAge = 20;
 
     const age = calculateAgeAtCutoff(j.dateOfBirth, defaultAge);
 
@@ -280,7 +290,9 @@ export function CacahJiwaView({ profile }: { profile: UserProfile }) {
 
     // 4. Check Explicitly Belum Menikah (Youth / Single)
     const isYouthCategory = 
-      categoryStr === 'acr' || categoryStr === 'apr' || categoryStr === 'gpn' ||
+      getCategoryGroup(j.category) === 'ACR' ||
+      getCategoryGroup(j.category) === 'APR' ||
+      getCategoryGroup(j.category) === 'GPN' ||
       categoryStr.includes('caberawit') || categoryStr.includes('pra remaja') || categoryStr.includes('remaja') ||
       categoryStr === 'balita';
 

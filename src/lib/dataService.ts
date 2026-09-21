@@ -40,10 +40,15 @@ export async function saveData<T>(
     console.warn('[Cache] Could not read local cache for merge:', err);
   }
 
-  const itemToSave = { ...existingCachedItem, ...data, id: finalId };
+  const itemToSave = {
+    ...existingCachedItem,
+    ...data,
+    id: finalId,
+    _localAddedAt: existingCachedItem._localAddedAt || Date.now()
+  };
 
   // 2. Immediately update local persistent cache and clear memory cache to prevent ANY data loss
-  clearSheetMemoryCache();
+  clearSheetMemoryCache(collectionName);
   try {
     const cached = localStorage.getItem(`cache_${collectionName}`);
     const items = cached ? JSON.parse(cached) : [];
@@ -196,8 +201,14 @@ export async function deleteData(
   const effectiveSpreadsheetId = spreadsheetId || envSpreadsheetId || localStorage.getItem('app_spreadsheet_id');
 
   // 1. Immediately delete from local cache and clear memory cache
-  clearSheetMemoryCache();
+  clearSheetMemoryCache(collectionName);
   try {
+    let recentDeletes: Array<{ id: string; time: number }> = [];
+    const raw = localStorage.getItem(`recent_deletes_${collectionName}`);
+    if (raw) recentDeletes = JSON.parse(raw);
+    recentDeletes.push({ id: String(id), time: Date.now() });
+    localStorage.setItem(`recent_deletes_${collectionName}`, JSON.stringify(recentDeletes));
+
     const cached = localStorage.getItem(`cache_${collectionName}`);
     if (cached) {
       const items = JSON.parse(cached);
