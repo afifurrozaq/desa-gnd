@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { getSheetValues, clearSheetMemoryCache, getAppsScriptUrl } from '../lib/sheets';
 import { useFirebase } from '../components/FirebaseProvider';
+import { extractBirthDate } from '../lib/utils';
 
 export interface QueryWhereConstraint {
   field: string;
@@ -73,6 +74,10 @@ export function useDataQuery<T>(
                 } else {
                   item.imageUrls = [];
                 }
+              }
+              if (collectionName === 'jamaah') {
+                const stdDob = extractBirthDate(item);
+                if (stdDob) item.dateOfBirth = stdDob;
               }
             }
             return item;
@@ -152,6 +157,10 @@ export function useDataQuery<T>(
             }
             item[header] = val;
           });
+          if (collectionName === 'jamaah') {
+            const stdDob = extractBirthDate(item);
+            if (stdDob) item.dateOfBirth = stdDob;
+          }
           return item as T;
         });
       }

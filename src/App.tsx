@@ -50,7 +50,11 @@ import {
   Sparkles,
   CheckCheck,
   FileSpreadsheet,
-  ShieldAlert
+  ShieldAlert,
+  Edit,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { ToastProvider, useToast } from './components/ToastContext';
@@ -84,7 +88,7 @@ import {
 import { useDataQuery, where } from './hooks/useDataQuery';
 import { createSpreadsheet, updateSheetValues, getSheetValues } from './lib/sheets';
 import { saveData, deleteData, clearSheetMemoryCache } from './lib/dataService';
-import { cn } from './lib/utils';
+import { cn, extractBirthDate, normalizeDateToInputFormat } from './lib/utils';
 import { UserProfile, UserRole, MosqueLocation, Jamaah, Asset, Activity, FacilityStat, JamaahCategory, Attendance, UBShopping, RegistrationLink } from './types';
 import { 
   MOSQUE_LOCATIONS, 
@@ -410,14 +414,24 @@ function PublicAttendanceView({ onBack, spreadsheetId }: { onBack: () => void, s
 
   const filteredJamaah = useMemo(() => {
     if (!searchTerm || selectedJamaah) return [];
-    return jamaahList.filter(j => {
-      const matchesSearch = j.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        j.memberId.toLowerCase().includes(searchTerm.toLowerCase());
-      if (selectedLocation) {
-        return matchesSearch && j.location === selectedLocation;
-      }
-      return matchesSearch;
-    }).slice(0, 5);
+    return jamaahList
+      .filter(j => {
+        const matchesSearch = (j.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+          (j.memberId || '').toLowerCase().includes(searchTerm.toLowerCase());
+        if (selectedLocation) {
+          return matchesSearch && j.location === selectedLocation;
+        }
+        return matchesSearch;
+      })
+      .sort((a, b) => {
+        const aId = a.memberId || '';
+        const bId = b.memberId || '';
+        if (!aId && !bId) return 0;
+        if (!aId) return 1;
+        if (!bId) return -1;
+        return aId.localeCompare(bId, undefined, { numeric: true, sensitivity: 'base' });
+      })
+      .slice(0, 8);
   }, [jamaahList, searchTerm, selectedJamaah, selectedLocation]);
 
   const handleSelectJamaah = (j: Jamaah) => {
@@ -1330,12 +1344,21 @@ function PublicJamaahRegistrationView({ onBack, spreadsheetId }: { onBack: () =>
     phone: string;
   } | null>(null);
 
-  // Filter Kepala Keluarga in the selected location
+  // Filter Kepala Keluarga in the selected location sorted by memberId
   const headsOfFamily = useMemo(() => {
-    return jamaahList.filter(j => 
-      (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') &&
-      j.location === selectedLocation
-    );
+    return jamaahList
+      .filter(j => 
+        (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') &&
+        j.location === selectedLocation
+      )
+      .sort((a, b) => {
+        const aId = a.memberId || '';
+        const bId = b.memberId || '';
+        if (!aId && !bId) return 0;
+        if (!aId) return 1;
+        if (!bId) return -1;
+        return aId.localeCompare(bId, undefined, { numeric: true, sensitivity: 'base' });
+      });
   }, [jamaahList, selectedLocation]);
 
   const filteredKKList = useMemo(() => {
@@ -3557,6 +3580,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
   const [selectedDapukan, setSelectedDapukan] = useState<string[]>([]);
   const [dapukanFilter, setDapukanFilter] = useState('');
   const [hasHajjStatus, setHasHajjStatus] = useState<string>('');
+  const [inputDateOfBirth, setInputDateOfBirth] = useState<string>('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -3574,6 +3598,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       setIsKkDropdownOpen(false);
       setSelectedDapukan([]);
       setHasHajjStatus('');
+      setInputDateOfBirth('');
       setFormTab('identitas');
       onFormTriggered?.();
     }
@@ -3590,19 +3615,48 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     }
   };
 
-  const filteredJamaah = jamaah.filter(j => 
-    String(j.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
-    String(j.nickname || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    String(j.phone || '').includes(searchTerm) ||
-    String(j.memberId || '').toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const [sortField, setSortField] = useState<'memberId' | 'name' | 'location' | 'registeredAt'>('memberId');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  const filteredJamaah = useMemo(() => {
+    return jamaah
+      .filter(j => 
+        String(j.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || 
+        String(j.nickname || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        String(j.phone || '').includes(searchTerm) ||
+        String(j.memberId || '').toLowerCase().includes(searchTerm.toLowerCase())
+      )
+      .sort((a, b) => {
+        const factor = sortOrder === 'asc' ? 1 : -1;
+        if (sortField === 'memberId') {
+          const aId = a.memberId || '';
+          const bId = b.memberId || '';
+          if (!aId && !bId) return 0;
+          if (!aId) return 1;
+          if (!bId) return -1;
+          return factor * aId.localeCompare(bId, undefined, { numeric: true, sensitivity: 'base' });
+        }
+        if (sortField === 'name') {
+          return factor * (a.name || '').localeCompare(b.name || '');
+        }
+        if (sortField === 'location') {
+          return factor * (a.location || '').localeCompare(b.location || '');
+        }
+        if (sortField === 'registeredAt') {
+          const aTime = a.registeredAt || 0;
+          const bTime = b.registeredAt || 0;
+          return factor * (aTime - bTime);
+        }
+        return 0;
+      });
+  }, [jamaah, searchTerm, sortField, sortOrder]);
 
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm]);
+  }, [searchTerm, sortField, sortOrder]);
 
   const totalPages = Math.ceil(filteredJamaah.length / pageSize) || 1;
   const paginatedJamaah = useMemo(() => {
@@ -3610,7 +3664,18 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     return filteredJamaah.slice(start, start + pageSize);
   }, [filteredJamaah, currentPage, pageSize]);
 
-  const headsOfFamily = jamaah.filter(j => (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') && (profile.role === 'admin' || !profile.location || (profile.location as string) === 'Seluruh Lokasi' ? true : j.location === profile.location));
+  const headsOfFamily = useMemo(() => {
+    return jamaah
+      .filter(j => (j.isKK === true || (j.isKK as any) === 'true' || (j.isKK as any) === 'TRUE') && (profile.role === 'admin' || !profile.location || (profile.location as string) === 'Seluruh Lokasi' ? true : j.location === profile.location))
+      .sort((a, b) => {
+        const aId = a.memberId || '';
+        const bId = b.memberId || '';
+        if (!aId && !bId) return 0;
+        if (!aId) return 1;
+        if (!bId) return -1;
+        return aId.localeCompare(bId, undefined, { numeric: true, sensitivity: 'base' });
+      });
+  }, [jamaah, profile.role, profile.location]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -3694,8 +3759,8 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       positions: selectedDapukan,
       photoUrl: base64Image || editingJamaah?.photoUrl || undefined,
       registeredAt: editingJamaah ? editingJamaah.registeredAt : Date.now(),
-      placeOfBirth: (formData.get('placeOfBirth') as string) || '',
-      dateOfBirth: (formData.get('dateOfBirth') as string) || '',
+      placeOfBirth: (formData.get('placeOfBirth') as string) || (editingJamaah as any)?.tempatLahir || '',
+      dateOfBirth: (formData.get('dateOfBirth') as string) || inputDateOfBirth || '',
       fatherName: (formData.get('fatherName') as string) || '',
       motherName: (formData.get('motherName') as string) || '',
       parentPhone: (formData.get('parentPhone') as string) || '',
@@ -3743,6 +3808,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
     setIsKkDropdownOpen(false);
     setSelectedDapukan([]);
     setHasHajjStatus('');
+    setInputDateOfBirth('');
     setFormTab('identitas');
   };
 
@@ -3764,6 +3830,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       : (Array.isArray(j.positions) ? j.positions : []);
     setSelectedDapukan(currentDapukan);
     setHasHajjStatus(j.hasHajj || '');
+    setInputDateOfBirth(extractBirthDate(j));
     setFormTab('identitas');
     setShowForm(true);
   };
@@ -3800,16 +3867,48 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50/50">
-          <div className="relative max-w-md">
+        <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input 
               type="text" 
               placeholder="Cari jamaah (Nama, Panggilan, ID, Telepon)..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none bg-white"
+              className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none bg-white text-sm"
             />
+          </div>
+
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            <span className="text-slate-500 font-medium">Urutkan:</span>
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value as any)}
+              className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-medium text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 text-xs shadow-sm cursor-pointer"
+            >
+              <option value="memberId">Member ID</option>
+              <option value="name">Nama Jamaah</option>
+              <option value="location">Lokasi Kelompok</option>
+              <option value="registeredAt">Tanggal Registrasi</option>
+            </select>
+            <button
+              type="button"
+              onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+              className="px-3 py-2 rounded-xl border border-slate-200 bg-white font-medium text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-1.5 shadow-sm active:scale-95"
+              title={sortOrder === 'asc' ? 'Urutan Menaik (A-Z / 1-9)' : 'Urutan Menurun (Z-A / 9-1)'}
+            >
+              {sortOrder === 'asc' ? (
+                <>
+                  <ArrowUp className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Menaik (1-9)</span>
+                </>
+              ) : (
+                <>
+                  <ArrowDown className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Menurun (9-1)</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -3817,11 +3916,51 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
             <thead className="bg-slate-50 text-slate-500 text-sm font-medium">
               <tr>
                 <th className="px-6 py-4 text-center">Foto</th>
-                <th className="px-6 py-4">ID / Nama</th>
+                <th 
+                  onClick={() => {
+                    if (sortField === 'memberId') {
+                      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                    } else {
+                      setSortField('memberId');
+                      setSortOrder('asc');
+                    }
+                  }}
+                  className="px-6 py-4 cursor-pointer select-none hover:text-emerald-700 transition-colors group"
+                  title="Klik untuk mengurutkan berdasarkan Member ID"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>ID / Nama</span>
+                    {sortField === 'memberId' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-emerald-600" /> : <ArrowDown className="w-3.5 h-3.5 text-emerald-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    )}
+                  </div>
+                </th>
                 <th className="px-6 py-4">Dapukan</th>
                 <th className="px-6 py-4">Kategori</th>
                 <th className="px-6 py-4">Telepon</th>
-                <th className="px-6 py-4">Lokasi</th>
+                <th 
+                  onClick={() => {
+                    if (sortField === 'location') {
+                      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                    } else {
+                      setSortField('location');
+                      setSortOrder('asc');
+                    }
+                  }}
+                  className="px-6 py-4 cursor-pointer select-none hover:text-emerald-700 transition-colors group"
+                  title="Klik untuk mengurutkan berdasarkan Lokasi Kelompok"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>Lokasi</span>
+                    {sortField === 'location' ? (
+                      sortOrder === 'asc' ? <ArrowUp className="w-3.5 h-3.5 text-emerald-600" /> : <ArrowDown className="w-3.5 h-3.5 text-emerald-600" />
+                    ) : (
+                      <ArrowUpDown className="w-3.5 h-3.5 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    )}
+                  </div>
+                </th>
                 <th className="px-6 py-4 text-center">Aksi</th>
               </tr>
             </thead>
@@ -4000,7 +4139,7 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                   </h4>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                     <div><span className="text-slate-400 block text-xs">Jenis Kelamin</span> <span className="font-semibold">{selectedJamaahDetail.gender || '-'}</span></div>
-                    <div><span className="text-slate-400 block text-xs">Tempat, Tgl Lahir</span> <span className="font-semibold">{selectedJamaahDetail.placeOfBirth || '-'}, {selectedJamaahDetail.dateOfBirth || '-'}</span></div>
+                    <div><span className="text-slate-400 block text-xs">Tempat, Tgl Lahir</span> <span className="font-semibold">{selectedJamaahDetail.placeOfBirth || (selectedJamaahDetail as any)?.tempatLahir || '-'}, {selectedJamaahDetail.dateOfBirth || extractBirthDate(selectedJamaahDetail) || '-'}</span></div>
                     <div><span className="text-slate-400 block text-xs">Golongan Darah</span> <span className="font-semibold">{selectedJamaahDetail.bloodType || '-'}</span></div>
                     <div><span className="text-slate-400 block text-xs">No. Telepon / WA</span> <span className="font-semibold">{selectedJamaahDetail.phone || '-'}</span></div>
                     <div><span className="text-slate-400 block text-xs">No. Ortu yang Bisa Dihubungi</span> <span className="font-semibold">{selectedJamaahDetail.parentPhone || '-'}</span></div>
@@ -4088,7 +4227,18 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                 </div>
               </div>
 
-              <div className="mt-6 flex justify-end">
+              <div className="mt-6 flex justify-end gap-3">
+                <button 
+                  onClick={() => {
+                    const detail = selectedJamaahDetail;
+                    setSelectedJamaahDetail(null);
+                    openEdit(detail);
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors flex items-center gap-2 text-sm shadow-md shadow-emerald-200"
+                >
+                  <Edit className="w-4 h-4" />
+                  <span>Edit Data</span>
+                </button>
                 <button 
                   onClick={() => setSelectedJamaahDetail(null)}
                   className="px-6 py-2.5 rounded-xl bg-slate-100 font-semibold text-slate-700 hover:bg-slate-200 transition-colors"
@@ -4173,7 +4323,11 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                 ))}
               </div>
 
-              <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto space-y-4 pr-1">
+              <form 
+                key={editingJamaah?.id || 'new-jamaah'} 
+                onSubmit={handleSubmit} 
+                className="flex-1 overflow-y-auto space-y-4 pr-1"
+              >
                 {/* TAB 1: IDENTITAS & KONTAK */}
                 <div className={cn("space-y-4", formTab === 'identitas' ? 'block' : 'hidden')}>
                   <div className="flex justify-center mb-4">
@@ -4206,11 +4360,22 @@ function JamaahView({ profile, formTrigger, onFormTriggered }: { profile: UserPr
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">Tempat Lahir</label>
-                      <input name="placeOfBirth" defaultValue={editingJamaah?.placeOfBirth} placeholder="Contoh: Jakarta" className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                      <input 
+                        name="placeOfBirth" 
+                        defaultValue={editingJamaah?.placeOfBirth || (editingJamaah as any)?.tempatLahir || (editingJamaah as any)?.tempat_lahir || ''} 
+                        placeholder="Contoh: Jakarta" 
+                        className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" 
+                      />
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1">Tanggal Lahir</label>
-                      <input type="date" name="dateOfBirth" defaultValue={editingJamaah?.dateOfBirth} className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm" />
+                      <input 
+                        type="date" 
+                        name="dateOfBirth" 
+                        value={inputDateOfBirth} 
+                        onChange={(e) => setInputDateOfBirth(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-white" 
+                      />
                     </div>
                   </div>
 
@@ -5763,12 +5928,25 @@ function UBShoppingView({ profile }: { profile: UserProfile }) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   const filteredJamaah = useMemo(() => {
-    if (!jamaahSearch) return allJamaah.slice(0, 10);
-    const lowerSearch = jamaahSearch.toLowerCase();
-    return allJamaah.filter(j => 
-      j.name.toLowerCase().includes(lowerSearch) || 
-      j.memberId.toLowerCase().includes(lowerSearch)
-    ).slice(0, 10);
+    let list = allJamaah;
+    if (jamaahSearch) {
+      const lowerSearch = jamaahSearch.toLowerCase();
+      list = allJamaah.filter(j => 
+        (j.name || '').toLowerCase().includes(lowerSearch) || 
+        (j.memberId || '').toLowerCase().includes(lowerSearch)
+      );
+    }
+    return list
+      .slice()
+      .sort((a, b) => {
+        const aId = a.memberId || '';
+        const bId = b.memberId || '';
+        if (!aId && !bId) return 0;
+        if (!aId) return 1;
+        if (!bId) return -1;
+        return aId.localeCompare(bId, undefined, { numeric: true, sensitivity: 'base' });
+      })
+      .slice(0, 15);
   }, [allJamaah, jamaahSearch]);
 
   const months = [

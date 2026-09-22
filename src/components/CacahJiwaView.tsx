@@ -25,6 +25,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile, MosqueLocation, Jamaah } from '../types';
 import { useDataQuery, where } from '../hooks/useDataQuery';
 import { MOSQUE_LOCATIONS as ALL_KELOMPOK } from '../constants';
+import { normalizeDateToInputFormat } from '../lib/utils';
 
 interface CacahJiwaRowData {
   no: number;
@@ -133,7 +134,8 @@ export function CacahJiwaView({ profile }: { profile: UserProfile }) {
 
    const calculateAgeAtCutoff = (dobStr?: string, defaultAge = 25): number => {
     if (!dobStr) return defaultAge;
-    const dob = new Date(dobStr);
+    const stdDob = normalizeDateToInputFormat(dobStr);
+    const dob = stdDob ? new Date(stdDob) : new Date(dobStr);
     if (isNaN(dob.getTime())) return defaultAge;
 
     let age = cutoffDate.getFullYear() - dob.getFullYear();
