@@ -49,7 +49,8 @@ import {
   Timer,
   Sparkles,
   CheckCheck,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ShieldAlert
 } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { ToastProvider, useToast } from './components/ToastContext';
@@ -110,7 +111,10 @@ import {
   APP_TITLE, 
   APP_SUBTITLE, 
   APP_CREDIT_STUDIO, 
-  APP_CREDIT_URL 
+  APP_CREDIT_URL,
+  canAccessMenu,
+  MENU_ACCESS_CONFIG,
+  SYSTEM_MENU_IDS
 } from './constants';
 
 // --- Firestore Error Handling ---
@@ -3353,15 +3357,15 @@ function Overview({ profile }: { profile: UserProfile }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md min-w-0">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900">Pertumbuhan Jamaah</h3>
             <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
               {jamaah.length} Terdaftar
             </span>
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full min-w-0 h-64 min-h-[256px] relative">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
               <LineChart data={jamaahGrowthData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="date" fontSize={11} stroke="#94a3b8" tickLine={false} />
@@ -3384,15 +3388,15 @@ function Overview({ profile }: { profile: UserProfile }) {
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md min-w-0">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900">Status Inventaris</h3>
             <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">
               {barangAssets.length} Total Aset
             </span>
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full min-w-0 h-64 min-h-[256px] relative">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
               <BarChart data={barangInventoryData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="name" fontSize={12} stroke="#64748b" tickLine={false} />
@@ -3415,15 +3419,15 @@ function Overview({ profile }: { profile: UserProfile }) {
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md min-w-0">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900">Distribusi Tanah Sabilillah</h3>
             <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-2.5 py-1 rounded-full">
               {totalTanahArea.toLocaleString('id-ID')} m²
             </span>
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full min-w-0 h-64 min-h-[256px] relative">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
               <BarChart data={tanahDistData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="name" fontSize={11} stroke="#64748b" tickLine={false} />
@@ -3446,15 +3450,15 @@ function Overview({ profile }: { profile: UserProfile }) {
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md">
+        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm transition-all hover:shadow-md min-w-0">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-bold text-slate-900">Kategori Jamaah</h3>
             <span className="text-xs font-semibold text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full">
               {jamaahCategories.length} Kelompok
             </span>
           </div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="w-full min-w-0 h-64 min-h-[256px] relative">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
               <PieChart>
                 <Pie
                   data={jamaahCatPieData}
@@ -6954,7 +6958,7 @@ function UsersView({ profile }: { profile?: any }) {
       setTimeout(() => setSaveScriptSuccess(false), 3000);
     };
 
-    const appsScriptCode = `// KODE GOOGLE APPS SCRIPT (UNTUK AKSES BEBAS LOGIN & BEBAS TOKEN)
+    const appsScriptCode = `// KODE GOOGLE APPS SCRIPT (OPTIMAL: BATCH ALL-IN-ONE & BEBAS TOKEN)
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
@@ -6964,7 +6968,9 @@ function doPost(e) {
     
     if (data.action === 'save') {
       var item = data.item;
-      var rows = sheet.getDataRange().getValues();
+      var lastRow = sheet.getLastRow();
+      var lastCol = sheet.getLastColumn();
+      var rows = (lastRow > 0 && lastCol > 0) ? sheet.getRange(1, 1, lastRow, lastCol).getValues() : [];
       var headers = rows.length > 0 && rows[0][0] !== '' ? rows[0] : [];
       
       var itemKeys = Object.keys(item);
@@ -7014,7 +7020,9 @@ function doPost(e) {
     }
     
     if (data.action === 'delete') {
-      var rows = sheet.getDataRange().getValues();
+      var lastRow = sheet.getLastRow();
+      var lastCol = sheet.getLastColumn();
+      var rows = (lastRow > 0 && lastCol > 0) ? sheet.getRange(1, 1, lastRow, lastCol).getValues() : [];
       var headers = rows.length > 0 ? rows[0] : [];
       var idIndex = headers.indexOf('id');
       if (idIndex === -1) idIndex = headers.indexOf('uid');
@@ -7038,12 +7046,36 @@ function doPost(e) {
 function doGet(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var action = (e && e.parameter && e.parameter.action) || '';
+
+    // ⚡ BATCH LOADING ALL-IN-ONE: Mengembalikan seluruh data sheet dalam 1 kali round-trip
+    if (action === 'getAll') {
+      var sheets = ss.getSheets();
+      var result = {};
+      for (var i = 0; i < sheets.length; i++) {
+        var s = sheets[i];
+        var name = s.getName();
+        var lastRow = s.getLastRow();
+        var lastCol = s.getLastColumn();
+        if (lastRow > 0 && lastCol > 0) {
+          result[name] = s.getRange(1, 1, lastRow, lastCol).getValues();
+        } else {
+          result[name] = [];
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ status: 'success', data: result }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // MODE STANDAR PER-SHEET (BACKWARD COMPATIBLE)
     var sheetName = (e && e.parameter && (e.parameter.collection || e.parameter.sheet)) || 'jamaah';
     var sheet = ss.getSheetByName(sheetName);
     if (!sheet) {
       return ContentService.createTextOutput(JSON.stringify({ values: [] })).setMimeType(ContentService.MimeType.JSON);
     }
-    var values = sheet.getDataRange().getValues();
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    var values = (lastRow > 0 && lastCol > 0) ? sheet.getRange(1, 1, lastRow, lastCol).getValues() : [];
     return ContentService.createTextOutput(JSON.stringify({ values: values })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ values: [], error: err.toString() })).setMimeType(ContentService.MimeType.JSON);
@@ -7456,6 +7488,13 @@ function DashboardContent() {
     }
   }, [syncProfileFromSheet, user?.uid]);
 
+  // Otomatis kembalikan ke overview jika role user tidak memiliki izin ke activeTab
+  useEffect(() => {
+    if (profile && !canAccessMenu(activeTab, profile.role)) {
+      setActiveTab('overview');
+    }
+  }, [activeTab, profile?.role]);
+
   if (authLoading) return (
     <div className="min-h-screen flex items-center justify-center">
       <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full" />
@@ -7512,6 +7551,26 @@ function DashboardContent() {
   const renderContent = () => {
     const profileWithSheet = { ...profile, spreadsheetId };
 
+    if (!canAccessMenu(activeTab, profile.role)) {
+      return (
+        <div className="flex flex-col items-center justify-center p-12 bg-white rounded-2xl border border-red-100 shadow-sm max-w-md mx-auto my-12 text-center">
+          <div className="w-16 h-16 rounded-full bg-red-50 text-red-500 flex items-center justify-center mb-4">
+            <ShieldAlert className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-800 mb-1">Akses Dibatasi</h3>
+          <p className="text-sm text-slate-500 mb-6 leading-relaxed">
+            Menu Sistem & Akses hanya dapat diakses oleh Admin. Akun Anda saat ini memiliki hak akses sebagai <span className="font-semibold capitalize text-slate-700">{profile.role}</span>.
+          </p>
+          <button
+            onClick={() => setActiveTab('overview')}
+            className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl shadow-md shadow-emerald-200 transition-all"
+          >
+            Kembali ke Dashboard
+          </button>
+        </div>
+      );
+    }
+
     switch (activeTab) {
       case 'overview': return <Overview profile={profileWithSheet} />;
       case 'jamaah': return <JamaahView profile={profileWithSheet} formTrigger={formTrigger} onFormTriggered={() => setFormTrigger(null)} />;
@@ -7552,13 +7611,22 @@ function DashboardContent() {
           <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => setActiveTab('attendance_report')} />
           <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => setActiveTab('ub_shopping')} />
           
-          <div className="pt-3 pb-1">
-            <div className="h-[1px] bg-slate-100 mb-2" />
-            <span className="px-3 text-[10px] font-black uppercase tracking-wider text-slate-400">Sistem & Akses</span>
-          </div>
+          {/* Menu Sistem & Akses: Hanya dapat diakses oleh Admin sesuai pengaturan di constants.ts */}
+          {(canAccessMenu('users', profile.role) || canAccessMenu('migration', profile.role)) && (
+            <>
+              <div className="pt-3 pb-1">
+                <div className="h-[1px] bg-slate-100 mb-2" />
+                <span className="px-3 text-[10px] font-black uppercase tracking-wider text-slate-400">Sistem & Akses</span>
+              </div>
 
-          <SidebarItem icon={UserCheck} label="Pengguna (User)" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
-          <SidebarItem icon={Database} label="Migrasi Database" active={activeTab === 'migration'} onClick={() => setActiveTab('migration')} />
+              {canAccessMenu('users', profile.role) && (
+                <SidebarItem icon={UserCheck} label="Pengguna (User)" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />
+              )}
+              {canAccessMenu('migration', profile.role) && (
+                <SidebarItem icon={Database} label="Migrasi Database" active={activeTab === 'migration'} onClick={() => setActiveTab('migration')} />
+              )}
+            </>
+          )}
         </nav>
         
         <div className="p-6 border-t border-slate-50">
@@ -7632,13 +7700,22 @@ function DashboardContent() {
                 <SidebarItem icon={ClipboardList} label="Laporan Absensi" active={activeTab === 'attendance_report'} onClick={() => { setActiveTab('attendance_report'); setIsMobileMenuOpen(false); }} />
                 <SidebarItem icon={ShoppingBag} label="Belanja UB" active={activeTab === 'ub_shopping'} onClick={() => { setActiveTab('ub_shopping'); setIsMobileMenuOpen(false); }} />
                 
-                <div className="pt-3 pb-1">
-                  <div className="h-[1px] bg-slate-100 mb-2" />
-                  <span className="px-3 text-[10px] font-black uppercase tracking-wider text-slate-400">Sistem & Akses</span>
-                </div>
+                {/* Menu Sistem & Akses: Hanya dapat diakses oleh Admin sesuai pengaturan di constants.ts */}
+                {(canAccessMenu('users', profile.role) || canAccessMenu('migration', profile.role)) && (
+                  <>
+                    <div className="pt-3 pb-1">
+                      <div className="h-[1px] bg-slate-100 mb-2" />
+                      <span className="px-3 text-[10px] font-black uppercase tracking-wider text-slate-400">Sistem & Akses</span>
+                    </div>
 
-                <SidebarItem icon={UserCheck} label="Pengguna (User)" active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }} />
-                <SidebarItem icon={Database} label="Migrasi Database" active={activeTab === 'migration'} onClick={() => { setActiveTab('migration'); setIsMobileMenuOpen(false); }} />
+                    {canAccessMenu('users', profile.role) && (
+                      <SidebarItem icon={UserCheck} label="Pengguna (User)" active={activeTab === 'users'} onClick={() => { setActiveTab('users'); setIsMobileMenuOpen(false); }} />
+                    )}
+                    {canAccessMenu('migration', profile.role) && (
+                      <SidebarItem icon={Database} label="Migrasi Database" active={activeTab === 'migration'} onClick={() => { setActiveTab('migration'); setIsMobileMenuOpen(false); }} />
+                    )}
+                  </>
+                )}
               </nav>
 
               <div className="p-6 border-t border-slate-50">

@@ -4,7 +4,7 @@
  * untuk mempermudah penambahan atau pengubahan data statis aplikasi di satu tempat.
  */
 
-import { MosqueLocation } from './types';
+import type { MosqueLocation, UserRole } from './types';
 
 export interface DropdownOption<T = string> {
   value: T;
@@ -364,3 +364,46 @@ export const USER_ROLE_OPTIONS: DropdownOption[] = [
   { value: 'jamaah', label: 'Jamaah / Anggota' }
 ];
 
+// --- KONFIGURASI HAK AKSES MENU (MENU ACCESS PERMISSION) ---
+/**
+ * Konfigurasi Hak Akses Menu Aplikasi berdasarkan Role Pengguna.
+ * Catatan:
+ * - Menu dalam kategori 'Sistem & Akses' (seperti 'users' dan 'migration') hanya dapat diakses oleh role 'admin'.
+ * - Menu operasional harian dapat diakses oleh 'admin' dan 'pengurus'.
+ */
+export const MENU_ACCESS_CONFIG: Record<string, UserRole[]> = {
+  // Menu Utama & Operasional
+  overview: ['admin', 'pengurus'],
+  jamaah: ['admin', 'pengurus'],
+  cacah_jiwa: ['admin', 'pengurus'],
+  inventaris: ['admin', 'pengurus'],
+  tanah: ['admin', 'pengurus'],
+  activities: ['admin', 'pengurus'],
+  facilities: ['admin', 'pengurus'],
+  attendance_report: ['admin', 'pengurus'],
+  ub_shopping: ['admin', 'pengurus'],
+
+  // Menu Kategori "Sistem & Akses" (Hanya bisa diakses oleh Admin)
+  users: ['admin'],
+  migration: ['admin'],
+};
+
+/**
+ * Daftar identifier menu yang termasuk dalam kelompok "Sistem & Akses"
+ */
+export const SYSTEM_MENU_IDS: readonly string[] = ['users', 'migration'];
+
+/**
+ * Helper function untuk mengecek apakah role tertentu berhak mengakses ID menu tertentu.
+ * Digunakan untuk proteksi tampilan sidebar serta pencegahan navigasi liar.
+ */
+export const canAccessMenu = (
+  menuId: string,
+  userRole: UserRole | string | undefined | null
+): boolean => {
+  if (!userRole) return false;
+  const allowedRoles = MENU_ACCESS_CONFIG[menuId];
+  // Jika menu tidak didefinisikan secara khusus, default izinkan
+  if (!allowedRoles || allowedRoles.length === 0) return true;
+  return allowedRoles.includes(userRole as UserRole);
+};

@@ -4,17 +4,25 @@
  */
 
 const GOOGLE_SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
-const FALLBACK_API_KEY = 'AIzaSyCBRAeVjFpslb7v4ck_VEehjjWjBt49LUI';
 
-const isValidAppsScriptUrl = (url: string | null | undefined): boolean => {
-  if (!url || typeof url !== 'string') return false;
-  const trimmed = url.trim();
-  if (!trimmed) return false;
-  if (!/^https?:\/\//i.test(trimmed)) return false;
-  if (trimmed.includes('googleusercontent.com') || trimmed.includes('/echo?')) {
-    return false;
+export const normalizeAppsScriptUrl = (url: string | null | undefined): string | null => {
+  if (!url || typeof url !== 'string') return null;
+  let trimmed = url.trim();
+  if (!trimmed) return null;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
   }
-  return /script\.google\.com\/macros\/s\/.*\/exec/i.test(trimmed) || /script\.google\.com\/macros\/d\/.*\/exec/i.test(trimmed);
+  if (trimmed.includes('googleusercontent.com') || trimmed.includes('/echo?')) {
+    return null;
+  }
+  if (!trimmed.includes('script.google.com')) {
+    return null;
+  }
+  // Convert /edit to /exec if user accidentally pasted script editor URL
+  if (trimmed.includes('/edit')) {
+    trimmed = trimmed.replace(/\/edit.*$/i, '/exec');
+  }
+  return trimmed;
 };
 
 export const getAppsScriptUrl = (): string | null => {
@@ -24,14 +32,11 @@ export const getAppsScriptUrl = (): string | null => {
     null
   );
 
-  if (!isValidAppsScriptUrl(raw)) {
-    if (raw) {
-      console.warn('[Sheets] Ignoring invalid Apps Script URL and falling back safely:', raw);
-    }
-    return null;
+  const normalized = normalizeAppsScriptUrl(raw);
+  if (!normalized && raw) {
+    console.warn('[Sheets] URL Apps Script tidak valid atau bukan URL Web App yang benar (/exec):', raw);
   }
-
-  return raw.trim();
+  return normalized;
 };
 
 export interface SheetData {
@@ -129,194 +134,281 @@ export const clearSheetMemoryCache = (collectionName?: string) => {
   }
 };
 
-/**
- * Fast GViz fetch for public spreadsheets (sub-150ms directly from Google CDN with cache-busting)
- */
-const fetchViaGViz = async (spreadsheetId: string, sheetName: string): Promise<SheetData | null> => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    try {
-      controller.abort('timeout');
-    } catch {
-      controller.abort();
-    }
-  }, 4000);
-
-  try {
-    const gvizUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&_cb=${Date.now()}`;
-    const gvizResponse = await fetch(gvizUrl, { signal: controller.signal, cache: 'no-store' });
-
-    if (gvizResponse.ok) {
-      const text = await gvizResponse.text();
-      const jsonStart = text.indexOf('{');
-      const jsonEnd = text.lastIndexOf('}');
-      if (jsonStart !== -1 && jsonEnd !== -1) {
-        const parsed = JSON.parse(text.substring(jsonStart, jsonEnd + 1));
-        if (parsed.status === 'error') return null;
-
-        const cols = parsed.table?.cols || [];
-        const rows = parsed.table?.rows || [];
-        const headers = cols.map((c: any) => c.label || c.id || '');
-        const values = [
-          headers,
-          ...rows.map((r: any) => (r.c || []).map((cell: any) => cell?.v ?? ''))
-        ];
-        return { range: `${sheetName}!A:ZZ`, values };
+export function parseSheetRowsToObjects<T = any>(rows: any[][]): T[] {
+  if (!rows || rows.length === 0) return [];
+  const headers = rows[0] || [];
+  return rows.slice(1).map(row => {
+    const item: any = {};
+    headers.forEach((header, index) => {
+      let val = row[index];
+      try {
+        if (typeof val === 'string') {
+          if (val.startsWith('{') || val.startsWith('[')) {
+            val = JSON.parse(val);
+          } else if (val.toLowerCase() === 'true') {
+            val = true;
+          } else if (val.toLowerCase() === 'false') {
+            val = false;
+          } else if (!isNaN(Number(val)) && val !== '' && !val.startsWith('0')) {
+            val = Number(val);
+          }
+        }
+      } catch (e) {}
+      if (header === 'imageUrls' || header === 'images') {
+        if (!Array.isArray(val)) {
+          if (typeof val === 'string' && val.trim()) {
+            if (val.trim().startsWith('[') && val.trim().endsWith(']')) {
+              try { val = JSON.parse(val.trim()); } catch (e) {}
+            } else if (val.includes(',')) {
+              val = val.split(',').map((s: string) => s.trim()).filter(Boolean);
+            } else {
+              val = [val.trim()];
+            }
+          } else {
+            val = [];
+          }
+        }
       }
+      item[header] = val;
+    });
+    return item as T;
+  });
+}
+
+// In-flight request deduplication map to prevent multiple simultaneous requests for the same sheet
+const inFlightRequests = new Map<string, Promise<SheetData>>();
+
+// Concurrency queue to avoid overwhelming Google Apps Script's concurrent execution limit
+let activeAppsScriptRequests = 0;
+const MAX_CONCURRENT_REQUESTS = 2;
+const appsScriptQueue: Array<() => void> = [];
+
+const queueAppsScriptRequest = <T>(task: () => Promise<T>): Promise<T> => {
+  return new Promise<T>((resolve, reject) => {
+    const execute = () => {
+      activeAppsScriptRequests++;
+      task()
+        .then(resolve)
+        .catch(reject)
+        .finally(() => {
+          activeAppsScriptRequests--;
+          if (appsScriptQueue.length > 0) {
+            const next = appsScriptQueue.shift();
+            next?.();
+          }
+        });
+    };
+
+    if (activeAppsScriptRequests < MAX_CONCURRENT_REQUESTS) {
+      execute();
+    } else {
+      appsScriptQueue.push(execute);
     }
-  } catch (err: any) {
-    // Graceful fallback - ignore AbortError/timeout
-    if (err?.name !== 'AbortError') {
-      // quiet fallback
-    }
-  } finally {
-    clearTimeout(timeoutId);
+  });
+};
+
+// Batch All-in-One Fetch State
+let batchFetchPromise: Promise<boolean> | null = null;
+let lastBatchFetchTime = 0;
+const BATCH_CACHE_COOLDOWN_MS = 6000; // 6 seconds cooldown between batch fetches
+
+/**
+ * Fetch ALL sheets simultaneously in a single HTTP request using action=getAll.
+ * Dramatically cuts load time by triggering Google Apps Script cold-start only once.
+ */
+export const fetchAllSheetsBatch = async (
+  spreadsheetId?: string | null,
+  force: boolean = false
+): Promise<boolean> => {
+  const appsScriptUrl = getAppsScriptUrl();
+  if (!appsScriptUrl) return false;
+
+  const now = Date.now();
+  if (!force && now - lastBatchFetchTime < BATCH_CACHE_COOLDOWN_MS) {
+    return true;
   }
-  return null;
+
+  if (batchFetchPromise) {
+    return batchFetchPromise;
+  }
+
+  batchFetchPromise = (async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        try { controller.abort('Apps Script timeout'); } catch {}
+      }, 45000);
+
+      const sep = appsScriptUrl.includes('?') ? '&' : '?';
+      const fetchUrl = `${appsScriptUrl}${sep}action=getAll&_t=${Date.now()}`;
+
+      const res = await fetch(fetchUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        cache: 'no-store',
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) return false;
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('application/json') && !contentType.includes('+json')) {
+        return false;
+      }
+
+      const json = await res.json();
+      if (json && json.status === 'success' && json.data && typeof json.data === 'object') {
+        const dataMap = json.data as Record<string, any[][]>;
+        const curTime = Date.now();
+        lastBatchFetchTime = curTime;
+
+        Object.keys(dataMap).forEach((collection) => {
+          const rawValues = dataMap[collection] || [];
+          const cacheKey = `${spreadsheetId || 'default'}_${collection}`;
+          memoryCache.set(cacheKey, {
+            data: { range: `${collection}!A:ZZ`, values: rawValues },
+            expiresAt: curTime + CACHE_TTL_MS
+          });
+
+          // Also populate localStorage cache so it's instantly usable
+          try {
+            const items = parseSheetRowsToObjects(rawValues);
+            if (items.length > 0) {
+              localStorage.setItem(`cache_${collection}`, JSON.stringify(items));
+              window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName: collection } }));
+            }
+          } catch (e) {}
+        });
+
+        console.info('[Sheets] Batch loading all-in-one berhasil! Seluruh data tabel dimuat dalam 1 request.');
+        return true;
+      }
+      return false;
+    } catch (err) {
+      return false;
+    } finally {
+      batchFetchPromise = null;
+    }
+  })();
+
+  return batchFetchPromise;
 };
 
 /**
- * Fetch values with intelligent fast strategy:
- * 1. Return from memory cache if fresh (0ms)
- * 2. If spreadsheet is open public, use GViz directly (sub-150ms, no token needed)
- * 3. Fallback to OAuth token, Apps Script Web App, or API Key if private
+ * Fetch values EXCLUSIVELY via Google Apps Script Web App.
+ * Uses Batch All-in-One when possible, with individual fallback.
  */
-export const getSheetValues = async (accessToken: string | null | undefined, spreadsheetId: string, range: string): Promise<SheetData> => {
-  if (!spreadsheetId) {
-    return { range, values: [] };
-  }
-
+export const getSheetValues = async (
+  _accessToken: string | null | undefined,
+  spreadsheetId: string | null | undefined,
+  range: string
+): Promise<SheetData> => {
   const sheetName = range.split('!')[0] || 'Sheet1';
-  const cacheKey = `${spreadsheetId}_${sheetName}`;
+  const cacheKey = `${spreadsheetId || 'default'}_${sheetName}`;
 
-  // 1. Instant return from in-memory cache
+  // 1. Instant return from in-memory cache (0ms)
   const cached = memoryCache.get(cacheKey);
   const now = Date.now();
   if (cached && cached.expiresAt > now) {
     return cached.data;
   }
 
+  // 2. Return active in-flight promise if the same sheet is already being fetched
+  const inFlight = inFlightRequests.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
   const appsScriptUrl = getAppsScriptUrl();
-  if (appsScriptUrl) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      try {
-        controller.abort('Apps Script timeout');
-      } catch {
-        controller.abort();
-      }
-    }, 30000);
+  if (!appsScriptUrl) {
+    console.warn('[Sheets] URL Apps Script belum dikonfigurasi. Silakan atur URL Web App Apps Script di menu pengaturan.');
+    return { range, values: [] };
+  }
 
-    try {
-      const fetchUrl = `${appsScriptUrl}${appsScriptUrl.includes('?') ? '&' : '?'}collection=${encodeURIComponent(sheetName)}`;
-      const res = await fetch(fetchUrl, { signal: controller.signal });
-      const contentType = (res.headers.get('content-type') || '').toLowerCase();
-
-      if (!res.ok) {
-        throw new Error(`Apps Script HTTP ${res.status}`);
-      }
-
-      if (!contentType.includes('application/json') && !contentType.includes('+json')) {
-        const text = await res.text();
-        console.warn('[Sheets] Apps Script returned non-JSON response:', text.slice(0, 250));
-        throw new Error('Apps Script did not return JSON');
-      }
-
-      const json = await res.json();
-      if (json && Array.isArray(json.values)) {
-        const result = { range, values: json.values };
-        memoryCache.set(cacheKey, { data: result, expiresAt: now + CACHE_TTL_MS });
-        return result;
-      }
-
-      throw new Error('Apps Script response missing values array');
-    } catch (err: any) {
-      const isAborted = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
-      console.warn('[Sheets] Apps Script URL is configured and active, so direct Google Sheets fallback is disabled:', err?.message || err);
-      if (!isAborted) {
-        return { range, values: [] };
-      }
-      return { range, values: [] };
-    } finally {
-      clearTimeout(timeoutId);
+  // 3. Attempt Batch All-in-One Fetch first to load all sheets in a single round-trip
+  if (now - lastBatchFetchTime > BATCH_CACHE_COOLDOWN_MS) {
+    await fetchAllSheetsBatch(spreadsheetId);
+    const batchCached = memoryCache.get(cacheKey);
+    if (batchCached && batchCached.expiresAt > Date.now()) {
+      return batchCached.data;
     }
   }
 
-  // Apps Script URL is not configured, so the old token/public fallbacks remain as last resort only.
-  if (accessToken) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      try {
-        controller.abort('timeout');
-      } catch {
-        controller.abort();
-      }
-    }, 6000);
+  const fetchPromise = (async (): Promise<SheetData> => {
+    const executeFetch = async (attempt: number = 1): Promise<SheetData> => {
+      return queueAppsScriptRequest(async () => {
+        const controller = new AbortController();
+        // 45 seconds timeout for cold start tolerance
+        const timeoutId = setTimeout(() => {
+          try {
+            controller.abort('Apps Script timeout');
+          } catch {
+            controller.abort();
+          }
+        }, 45000);
 
-    try {
-      const response = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-        signal: controller.signal,
+        try {
+          const sep = appsScriptUrl.includes('?') ? '&' : '?';
+          // Send collection, sheet, and action for maximum compatibility with all Apps Script doGet variations
+          const fetchUrl = `${appsScriptUrl}${sep}action=get&collection=${encodeURIComponent(sheetName)}&sheet=${encodeURIComponent(sheetName)}&_t=${Date.now()}`;
+          
+          const res = await fetch(fetchUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            cache: 'no-store',
+            signal: controller.signal
+          });
+
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          }
+
+          const contentType = (res.headers.get('content-type') || '').toLowerCase();
+          if (!contentType.includes('application/json') && !contentType.includes('+json')) {
+            const text = await res.text();
+            if (text.includes('<html') || text.includes('<!DOCTYPE')) {
+              console.warn(
+                '[Sheets] Apps Script mengembalikan halaman HTML. Pastikan Web App di-deploy dengan akses: "Anyone" (Siapa saja) dan URL berakhiran /exec.'
+              );
+            }
+            throw new Error('Apps Script tidak mengembalikan format JSON');
+          }
+
+          const json = await res.json();
+          if (json && Array.isArray(json.values)) {
+            const result: SheetData = { range, values: json.values };
+            memoryCache.set(cacheKey, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+            return result;
+          }
+
+          throw new Error('Respons Apps Script tidak memiliki array values');
+        } catch (err: any) {
+          const isTimeout = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('timeout') || String(err?.message || '').toLowerCase().includes('aborted');
+          
+          // Retry once on timeout/transient error with a brief cooldown
+          if (attempt === 1) {
+            await new Promise((r) => setTimeout(r, 1200));
+            return executeFetch(2);
+          }
+
+          console.warn(`[Sheets] Gagal mengambil sheet '${sheetName}' via Apps Script (${isTimeout ? 'Waktu habis / Timeout' : err?.message || err}). Menggunakan data lokal.`);
+          return { range, values: [] };
+        } finally {
+          clearTimeout(timeoutId);
+        }
       });
-
-      if (response.ok) {
-        const json = await response.json();
-        memoryCache.set(cacheKey, { data: json, expiresAt: now + CACHE_TTL_MS });
-        return json;
-      }
-
-      if (response.status === 401 || response.status === 403) {
-        localStorage.removeItem('app_access_token');
-        window.dispatchEvent(new Event('storage'));
-      }
-    } catch (err: any) {
-      if (err?.name !== 'AbortError' && !String(err?.message || '').includes('aborted')) {
-        console.warn('[Sheets] Token request network error:', err);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  const gvizResult = await fetchViaGViz(spreadsheetId, sheetName);
-  if (gvizResult && gvizResult.values && gvizResult.values.length > 0) {
-    memoryCache.set(cacheKey, { data: gvizResult, expiresAt: now + CACHE_TTL_MS });
-    return gvizResult;
-  }
-
-  const apiKey = (import.meta as any).env?.VITE_GOOGLE_API_KEY || FALLBACK_API_KEY;
-  if (apiKey) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      try {
-        controller.abort('API key timeout');
-      } catch {
-        controller.abort();
-      }
-    }, 6000);
+    };
 
     try {
-      const keyResponse = await fetch(`${GOOGLE_SHEETS_API_BASE}/${spreadsheetId}/values/${range}?key=${apiKey}`, {
-        signal: controller.signal
-      });
-      if (keyResponse.ok) {
-        const json = await keyResponse.json();
-        memoryCache.set(cacheKey, { data: json, expiresAt: now + CACHE_TTL_MS });
-        return json;
-      }
-    } catch (err: any) {
-      const isAborted = err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('aborted');
-      if (!isAborted) {
-        console.warn('[Sheets] API key fetch error:', err);
-      }
+      return await executeFetch(1);
     } finally {
-      clearTimeout(timeoutId);
+      inFlightRequests.delete(cacheKey);
     }
-  }
+  })();
 
-  return { range, values: [] };
+  inFlightRequests.set(cacheKey, fetchPromise);
+  return fetchPromise;
 };
 
 export const appendSheetValues = async (accessToken: string, spreadsheetId: string, range: string, values: any[][]) => {

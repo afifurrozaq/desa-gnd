@@ -150,4 +150,3 @@ export interface RegistrationLink {
   note?: string;
   isActive: boolean;
 }
-

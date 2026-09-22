@@ -1,13 +1,5 @@
-import { getSheetValues, updateSheetValues, appendSheetValues, clearSheetValues, createSpreadsheet, clearSheetMemoryCache } from './sheets';
-export { clearSheetMemoryCache };
-
-export function getAppsScriptUrl(): string | null {
-  return (
-    (import.meta as any).env?.VITE_APPS_SCRIPT_URL ||
-    localStorage.getItem('app_script_url') ||
-    null
-  );
-}
+import { getSheetValues, updateSheetValues, appendSheetValues, clearSheetValues, createSpreadsheet, clearSheetMemoryCache, getAppsScriptUrl } from './sheets';
+export { clearSheetMemoryCache, getAppsScriptUrl };
 
 export async function getOrRefreshAccessToken(providedToken?: string | null): Promise<string | null> {
   const token = providedToken || localStorage.getItem('app_access_token');

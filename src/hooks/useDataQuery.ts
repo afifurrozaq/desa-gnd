@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { getSheetValues, clearSheetMemoryCache } from '../lib/sheets';
+import { getSheetValues, clearSheetMemoryCache, getAppsScriptUrl } from '../lib/sheets';
 import { useFirebase } from '../components/FirebaseProvider';
 
 export interface QueryWhereConstraint {
@@ -100,8 +100,9 @@ export function useDataQuery<T>(
 
     const activeSpreadsheetId = overriddenSpreadsheetId || globalSpreadsheetId || (import.meta as any).env?.VITE_SPREADSHEET_ID || localStorage.getItem('app_spreadsheet_id') || '';
     const activeAccessToken = accessToken || localStorage.getItem('app_access_token') || null;
+    const appsScriptUrl = getAppsScriptUrl();
 
-    if (!activeSpreadsheetId) {
+    if (!activeSpreadsheetId && !appsScriptUrl) {
       setSheetLoading(false);
       return;
     }
@@ -278,4 +279,3 @@ export function useDataQuery<T>(
     };
   }, [sheetData, sheetLoading, sheetError, fetchFromSheets]);
 }
-
