@@ -19,12 +19,15 @@ export async function saveData<T>(
 
   const finalId = id || data.id || data.uid || Math.random().toString(36).substring(2, 11);
 
-  // 1. Merge with existing cached item to safeguard against data erasure on partial updates (e.g. isConfirmed)
+  // 1. Merge with existing cached item to safeguard against data erasure on partial updates (e.g. isConfirmed, isVerified)
   let existingCachedItem: any = {};
   try {
     const cached = localStorage.getItem(`cache_${collectionName}`);
     const items = cached ? JSON.parse(cached) : [];
-    const found = items.find((it: any) => String(it.id || it.uid) === String(finalId));
+    const found = items.find((it: any) => 
+      String(it.id || it.uid) === String(finalId) || 
+      (collectionName === 'users' && data?.email && it.email && it.email.toLowerCase() === data.email.toLowerCase())
+    );
     if (found) {
       existingCachedItem = found;
     }
@@ -32,9 +35,32 @@ export async function saveData<T>(
     console.warn('[Cache] Could not read local cache for merge:', err);
   }
 
+  // Filter out explicit undefined values from incoming data to prevent overwriting existing valid properties
+  const cleanData: any = {};
+  if (data && typeof data === 'object') {
+    Object.keys(data).forEach(k => {
+      if (data[k] !== undefined) {
+        cleanData[k] = data[k];
+      }
+    });
+  }
+
+  // Special preservation for 'users' collection: NEVER lose verification status, role, or location
+  if (collectionName === 'users') {
+    if (cleanData.isVerified === undefined && existingCachedItem.isVerified !== undefined) {
+      cleanData.isVerified = existingCachedItem.isVerified;
+    }
+    if (cleanData.role === undefined && existingCachedItem.role !== undefined) {
+      cleanData.role = existingCachedItem.role;
+    }
+    if (cleanData.location === undefined && existingCachedItem.location !== undefined) {
+      cleanData.location = existingCachedItem.location;
+    }
+  }
+
   const itemToSave = {
     ...existingCachedItem,
-    ...data,
+    ...cleanData,
     id: finalId,
     _localAddedAt: existingCachedItem._localAddedAt || Date.now()
   };
@@ -44,7 +70,10 @@ export async function saveData<T>(
   try {
     const cached = localStorage.getItem(`cache_${collectionName}`);
     const items = cached ? JSON.parse(cached) : [];
-    const existingIndex = items.findIndex((it: any) => String(it.id || it.uid) === String(finalId));
+    const existingIndex = items.findIndex((it: any) => 
+      String(it.id || it.uid) === String(finalId) ||
+      (collectionName === 'users' && data?.email && it.email && it.email.toLowerCase() === data.email.toLowerCase())
+    );
     if (existingIndex !== -1) {
       items[existingIndex] = { ...items[existingIndex], ...itemToSave };
     } else {
@@ -143,21 +172,29 @@ export async function saveData<T>(
     if (finalId && rows.length > 0) {
       let idIndex = headers.indexOf('id');
       if (idIndex === -1) idIndex = headers.indexOf('uid');
+      let emailIndex = headers.indexOf('email');
+
+      let rowIndex = -1;
       if (idIndex !== -1) {
-        const rowIndex = rows.findIndex((r, idx) => idx > 0 && String(r[idIndex]) === String(finalId));
-        if (rowIndex !== -1) {
-          const existingRowValues = rows[rowIndex] || [];
-          const rowValues = headers.map((h, colIdx) => {
-            const val = cleanItem[h];
-            if (val !== undefined && val !== null && val !== '') {
-              return val;
-            }
-            return existingRowValues[colIdx] !== undefined ? existingRowValues[colIdx] : '';
-          });
-          await updateSheetValues(token, currentSpreadsheetId!, `${collectionName}!A${rowIndex + 1}`, [rowValues]);
-          window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName } }));
-          return finalId;
-        }
+        rowIndex = rows.findIndex((r, idx) => idx > 0 && String(r[idIndex]) === String(finalId));
+      }
+      // If not found by id/uid, and collection is users or has email, try matching by email
+      if (rowIndex === -1 && emailIndex !== -1 && cleanItem.email) {
+        rowIndex = rows.findIndex((r, idx) => idx > 0 && String(r[emailIndex] || '').trim().toLowerCase() === String(cleanItem.email).trim().toLowerCase());
+      }
+
+      if (rowIndex !== -1) {
+        const existingRowValues = rows[rowIndex] || [];
+        const rowValues = headers.map((h, colIdx) => {
+          const val = cleanItem[h];
+          if (val !== undefined && val !== null && val !== '') {
+            return val;
+          }
+          return existingRowValues[colIdx] !== undefined ? existingRowValues[colIdx] : '';
+        });
+        await updateSheetValues(token, currentSpreadsheetId!, `${collectionName}!A${rowIndex + 1}`, [rowValues]);
+        window.dispatchEvent(new CustomEvent('data_updated', { detail: { collectionName } }));
+        return finalId;
       }
     }
 

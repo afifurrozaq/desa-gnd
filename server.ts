@@ -18,6 +18,24 @@ async function startServer() {
     });
   });
 
+  app.get("/api/client-info", (req, res) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    let clientIp = "";
+    if (typeof forwarded === "string") {
+      clientIp = forwarded.split(",")[0].trim();
+    } else if (Array.isArray(forwarded) && forwarded.length > 0) {
+      clientIp = forwarded[0].trim();
+    } else {
+      clientIp = req.socket.remoteAddress || "";
+    }
+    // Clean IPv6 mapped IPv4 like ::ffff:192.168.1.1
+    if (clientIp.startsWith("::ffff:")) {
+      clientIp = clientIp.substring(7);
+    }
+    const userAgent = req.headers["user-agent"] || "";
+    res.json({ ip: clientIp, userAgent });
+  });
+
   app.get("/firebase-applet-config.json", (req, res) => {
     const configPath = path.join(process.cwd(), "firebase-applet-config.json");
     res.sendFile(configPath);

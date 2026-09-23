@@ -14,6 +14,18 @@ export type MosqueLocation =
   | 'Cipete' 
   | 'Antena';
 
+export interface LoginHistoryEntry {
+  id?: string;
+  timestamp: number;
+  dateTimeStr: string;
+  ip: string;
+  location: string;
+  device?: string;
+  city?: string;
+  region?: string;
+  country?: string;
+}
+
 export interface UserProfile {
   id?: string;
   uid: string;
@@ -24,6 +36,13 @@ export interface UserProfile {
   isVerified: boolean;
   createdAt: number;
   spreadsheetId?: string;
+  // Login Tracking & History
+  lastLoginAt?: number | string;
+  lastLoginFormatted?: string;
+  lastLoginIp?: string;
+  lastLoginLocation?: string;
+  lastLoginDevice?: string;
+  loginHistory?: LoginHistoryEntry[] | string;
 }
 
 export type JamaahCategory = (typeof JAMAAH_CATEGORY_OPTIONS)[number]['value'];

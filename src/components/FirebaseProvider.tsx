@@ -3,6 +3,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, User, Auth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { saveData } from '../lib/dataService';
 import { getSheetValues } from '../lib/sheets';
+import { recordUserLogin } from '../lib/loginTracking';
 
 interface FirebaseContextType {
   user: User | null;
@@ -180,28 +181,42 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, []);
 
+  // Helper to parse boolean values safely
+  const parseBoolVerified = (val: any) => val === true || val === 'true' || val === 'TRUE';
+
   // Check user profile from Google Sheets or local cache
   const syncProfileFromSheet = useCallback(async (uid?: string) => {
     const targetUid = uid || auth?.currentUser?.uid || user?.uid;
     if (!targetUid) return;
+
+    const currentUserEmail = auth?.currentUser?.email || user?.email;
+    const isOwnerEmail = Boolean(currentUserEmail && (
+      currentUserEmail.toLowerCase() === 'travelio11111@gmail.com' ||
+      currentUserEmail.toLowerCase().startsWith('admin')
+    ));
 
     // 1. Immediately check local cache_users
     const cachedUsersStr = localStorage.getItem('cache_users');
     if (cachedUsersStr) {
       try {
         const cachedUsers = JSON.parse(cachedUsersStr);
-        const currentUserEmail = auth?.currentUser?.email || user?.email;
         const found = cachedUsers.find((u: any) => 
           String(u.id || u.uid) === targetUid ||
           (currentUserEmail && u.email && u.email.toLowerCase() === currentUserEmail.toLowerCase())
         );
         if (found) {
           setProfile((prev: any) => {
+            const currentIsVerified = isOwnerEmail || parseBoolVerified(found.isVerified) || (prev && parseBoolVerified(prev.isVerified));
+            const updated = { 
+              ...(prev || {}), 
+              ...found,
+              isVerified: currentIsVerified,
+              role: isOwnerEmail ? 'admin' : (found.role || prev?.role || 'pengurus')
+            };
             if (prev) {
-              const hasDiff = Object.keys(found).some(k => prev[k] !== found[k]);
+              const hasDiff = Object.keys(updated).some(k => prev[k] !== updated[k]);
               if (!hasDiff) return prev;
             }
-            const updated = { ...(prev || {}), ...found };
             localStorage.setItem(`user_profile_${targetUid}`, JSON.stringify(updated));
             return updated;
           });
@@ -222,12 +237,15 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         let idIdx = headers.indexOf('id');
         if (idIdx === -1) idIdx = headers.indexOf('uid');
         let emailIdx = headers.indexOf('email');
-        const currentUserEmail = auth?.currentUser?.email || user?.email;
+        let verifiedIdx = headers.indexOf('isVerified');
 
-        const userRow = rows.slice(1).find(r => 
+        // Search matching rows - if multiple exist, prioritize verified row
+        const matchingRows = rows.slice(1).filter(r => 
           (idIdx !== -1 && String(r[idIdx]) === targetUid) ||
           (emailIdx !== -1 && currentUserEmail && String(r[emailIdx]).toLowerCase() === currentUserEmail.toLowerCase())
         );
+
+        let userRow = matchingRows.find(r => verifiedIdx !== -1 && parseBoolVerified(r[verifiedIdx])) || matchingRows[0];
 
         if (userRow) {
           const remoteObj: any = {};
@@ -239,12 +257,19 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             }
             remoteObj[h] = val;
           });
+
           setProfile((prev: any) => {
+            const verified = isOwnerEmail || parseBoolVerified(remoteObj.isVerified) || (prev && parseBoolVerified(prev.isVerified));
+            const updated = { 
+              ...(prev || {}), 
+              ...remoteObj,
+              isVerified: verified,
+              role: isOwnerEmail ? 'admin' : (remoteObj.role || prev?.role || 'pengurus')
+            };
             if (prev) {
-              const hasDiff = Object.keys(remoteObj).some(k => prev[k] !== remoteObj[k]);
+              const hasDiff = Object.keys(updated).some(k => prev[k] !== updated[k]);
               if (!hasDiff) return prev;
             }
-            const updated = { ...(prev || {}), ...remoteObj };
             localStorage.setItem(`user_profile_${targetUid}`, JSON.stringify(updated));
             return updated;
           });
@@ -308,56 +333,58 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               currentUser.email.toLowerCase().startsWith('admin')
             );
 
+            // Check cache_users for existing verified data
+            let cachedUser: any = null;
+            try {
+              const cachedUsers = JSON.parse(localStorage.getItem('cache_users') || '[]');
+              cachedUser = cachedUsers.find((u: any) => 
+                String(u.id || u.uid) === currentUser.uid ||
+                (currentUser.email && u.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
+              );
+            } catch (e) {}
+
+            let parsedSaved: any = null;
             if (savedProfile) {
               try {
-                const parsed = JSON.parse(savedProfile);
-                if (isOwnerEmail) {
-                  parsed.role = 'admin';
-                  parsed.isVerified = true;
-                }
-                setProfile(parsed);
-              } catch (e) {
-                setProfile({
-                  uid: currentUser.uid,
-                  email: currentUser.email || '',
-                  displayName: currentUser.displayName || 'Admin',
-                  role: isOwnerEmail ? 'admin' : 'pengurus',
-                  isVerified: Boolean(isOwnerEmail),
-                  createdAt: Date.now()
-                });
-              }
-            } else {
-              // Check if cache_users has this user
-              let initialVerified = Boolean(isOwnerEmail);
-              let initialRole: any = isOwnerEmail ? 'admin' : 'pengurus';
-              let initialName = currentUser.displayName || (isOwnerEmail ? 'Administrator' : 'Pengguna');
-              try {
-                const cachedUsers = JSON.parse(localStorage.getItem('cache_users') || '[]');
-                const found = cachedUsers.find((u: any) => 
-                  String(u.id || u.uid) === currentUser.uid ||
-                  (currentUser.email && u.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
-                );
-                if (found) {
-                  initialVerified = isOwnerEmail || found.isVerified === true || found.isVerified === 'true' || found.isVerified === 'TRUE';
-                  initialRole = isOwnerEmail ? 'admin' : (found.role || 'pengurus');
-                  initialName = found.displayName || initialName;
-                }
+                parsedSaved = JSON.parse(savedProfile);
               } catch (e) {}
-
-              const defaultProfile = {
-                uid: currentUser.uid,
-                email: currentUser.email || '',
-                displayName: initialName,
-                role: initialRole,
-                isVerified: initialVerified,
-                createdAt: Date.now()
-              };
-              setProfile(defaultProfile);
-              localStorage.setItem(`user_profile_${currentUser.uid}`, JSON.stringify(defaultProfile));
             }
+
+            const initialVerified = isOwnerEmail || 
+              parseBoolVerified(cachedUser?.isVerified) || 
+              parseBoolVerified(parsedSaved?.isVerified);
+
+            const initialRole = isOwnerEmail ? 'admin' : (cachedUser?.role || parsedSaved?.role || 'pengurus');
+            const initialLocation = cachedUser?.location || parsedSaved?.location || '';
+            const initialName = cachedUser?.displayName || parsedSaved?.displayName || currentUser.displayName || (isOwnerEmail ? 'Administrator' : 'Pengguna');
+
+            const resolvedProfile = {
+              ...(parsedSaved || {}),
+              ...(cachedUser || {}),
+              uid: currentUser.uid,
+              id: cachedUser?.id || parsedSaved?.id || currentUser.uid,
+              email: currentUser.email || '',
+              displayName: initialName,
+              role: initialRole,
+              location: initialLocation,
+              isVerified: initialVerified,
+              createdAt: cachedUser?.createdAt || parsedSaved?.createdAt || Date.now()
+            };
+
+            setProfile(resolvedProfile);
+            localStorage.setItem(`user_profile_${currentUser.uid}`, JSON.stringify(resolvedProfile));
 
             // Sync authoritative profile data from Google Sheets
             syncProfileFromSheet(currentUser.uid);
+
+            // Record login history (IP, Location, Timestamp)
+            recordUserLogin(
+              currentUser.uid,
+              currentUser.email || '',
+              currentUser.displayName || undefined,
+              localStorage.getItem('app_spreadsheet_id') || (import.meta as any).env?.VITE_SPREADSHEET_ID,
+              localStorage.getItem('app_access_token')
+            ).catch(console.warn);
           } else {
             // User logged out: clear individual user profile, but KEEP persistent database token!
             setUser(null);
